@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "DiskVista",
+  "version": "0.1.5",
+  "identifier": "local.intell.diskcleaner",
+  "build": {
+    "beforeDevCommand": "pnpm --dir .. dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm --dir .. build",
+    "frontendDist": "../../ui/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "DiskVista",
+        "width": 1120,
+        "height": 720,
+        "minWidth": 860,
+        "minHeight": 420,
+        "decorations": false,
+        "visible": false,
+        "backgroundColor": "#ffffff"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost; object-src 'none'; frame-src 'none'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "externalBin": ["binaries/diskvista-worker"],
+    "resources": {
+      "../../third-party/": "third-party/",
+      "../../README.md": "README.md"
+    },
+    "shortDescription": "磁盘空间分析与清理工具",
+    "windows": {
+      "nsis": {
+        "displayLanguageSelector": false,
+        "languages": ["SimpChinese"],
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

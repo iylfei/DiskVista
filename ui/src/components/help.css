@@ -1,0 +1,56 @@
+.help-anchor {
+  position: relative;
+  top: -0.45em;
+  font-size: inherit;
+  line-height: 0;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+button.help-trigger {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  padding: 5px;
+  margin: 0 0 0 1px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #778593;
+  font-size: inherit;
+  vertical-align: middle;
+  cursor: help;
+}
+button.help-trigger:hover,
+button.help-trigger:focus-visible {
+  background: #eef3f7;
+  color: var(--blue);
+}
+.help-tooltip {
+  position: fixed;
+  z-index: 2000;
+  width: 300px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+  padding: 12px 14px;
+  border: 1px solid #dce3e9;
+  border-radius: 7px;
+  background: #fff;
+  color: #414b58;
+  box-shadow: 0 3px 14px #263a4c14;
+  font-size: 12px;
+  font-weight: 400;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.help-tooltip > strong {
+  display: block;
+  color: #242a32;
+  margin-bottom: 5px;
+}
+.help-tooltip > p {
+  margin: 0;
+  line-height: 1.7;
+}

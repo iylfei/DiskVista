@@ -1,0 +1,14 @@
+{
+  "version": "builtin-0.1.0",
+  "rules": [
+    {"id":"user-temp","name":"用户临时文件","root":"%TEMP%","category":"temporary","owner":"Windows / 应用临时数据","ageDays":7,"purpose":"应用运行期间生成的临时数据","consequence":"仍在使用的临时文件不会回收；部分应用可能重新生成数据","recovery":"回收站恢复；可再生成的数据由应用重新生成"},
+    {"id":"crash-dumps","name":"用户崩溃转储","root":"%LOCALAPPDATA%/CrashDumps","category":"diagnostic","owner":"Windows 错误报告","ageDays":30,"purpose":"软件崩溃时保存的诊断材料","consequence":"失去对应崩溃的排错记录，不影响原应用文件","recovery":"可从回收站恢复；旧的崩溃现场不能重新生成"},
+    {"id":"chrome-cache","name":"Chrome 缓存","root":"%LOCALAPPDATA%/Google/Chrome/User Data/*/Cache","category":"cache","owner":"Google Chrome","ageDays":7,"purpose":"网页资源缓存，不含密码和浏览历史","consequence":"之后访问网页可能需要重新下载资源","recovery":"应用联网后重新生成；也可从回收站恢复"},
+    {"id":"edge-cache","name":"Edge 缓存","root":"%LOCALAPPDATA%/Microsoft/Edge/User Data/*/Cache","category":"cache","owner":"Microsoft Edge","ageDays":7,"purpose":"网页资源缓存，不含密码和浏览历史","consequence":"之后访问网页可能需要重新下载资源","recovery":"应用联网后重新生成；也可从回收站恢复"},
+    {"id":"firefox-cache","name":"Firefox 缓存","root":"%LOCALAPPDATA%/Mozilla/Firefox/Profiles/*/cache2","category":"cache","owner":"Mozilla Firefox","ageDays":7,"purpose":"Firefox 本地网页缓存","consequence":"网页资源需要重新下载","recovery":"应用重新生成或从回收站恢复"},
+    {"id":"npm-cache","name":"npm 下载缓存","root":"%LOCALAPPDATA%/npm-cache/_cacache","category":"cache","owner":"npm","ageDays":30,"purpose":"包管理器下载的缓存副本","consequence":"以后安装依赖可能需要联网重新下载；离线安装可能受影响","recovery":"联网后重新下载，或从回收站恢复"},
+    {"id":"pip-cache","name":"pip 下载缓存","root":"%LOCALAPPDATA%/pip/Cache","category":"cache","owner":"pip","ageDays":30,"purpose":"Python 软件包下载缓存","consequence":"重新安装包可能需要联网和重新构建","recovery":"重新下载或从回收站恢复"},
+    {"id":"vscode-cache","name":"VS Code 缓存","root":"%APPDATA%/Code/Cache","category":"cache","owner":"Visual Studio Code","ageDays":7,"purpose":"编辑器界面资源缓存，不是工作区或配置","consequence":"下次启动可能变慢，缓存会重新生成","recovery":"应用重新生成或从回收站恢复"},
+    {"id":"d3d-cache","name":"Direct3D 着色器缓存","root":"%LOCALAPPDATA%/D3DSCache","category":"cache","owner":"Direct3D","ageDays":30,"purpose":"图形应用编译后的着色器缓存","consequence":"图形应用可能重新编译着色器，短时间出现卡顿","recovery":"运行图形应用后重新生成或从回收站恢复"}
+  ]
+}

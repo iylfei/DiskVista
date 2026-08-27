@@ -1,0 +1,21 @@
+[package]
+name = "cleaner-engine"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+cleaner-domain = { path = "../domain" }
+cleaner-platform = { path = "../platform" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+sha2.workspace = true
+rusqlite.workspace = true
+globset = "0.4"
+
+[dev-dependencies]
+tempfile = "3"

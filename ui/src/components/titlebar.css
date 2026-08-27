@@ -1,0 +1,67 @@
+.window-titlebar {
+  grid-column: 1 / -1;
+  display: flex;
+  height: 36px;
+  min-width: 0;
+  background: #fff;
+  border-bottom: 1px solid var(--line);
+  user-select: none;
+}
+.window-drag-region {
+  /* Native non-client hit testing avoids an IPC round trip on pointer-down.
+     Tauri's data attribute remains the fallback for older WebView2 runtimes. */
+  app-region: drag;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 14px;
+  color: #74808c;
+  font-size: 11px;
+  cursor: default;
+}
+/* The native drag handler checks the exact event target, not its ancestors. */
+.window-drag-region > * {
+  pointer-events: none;
+}
+.window-drag-region > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.window-drag-region > svg {
+  flex: none;
+  color: var(--blue);
+}
+.window-controls {
+  app-region: no-drag;
+  display: flex;
+  flex: none;
+}
+.window-controls > button {
+  width: 46px;
+  height: 35px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #56616d;
+  cursor: default;
+}
+.window-controls > button:hover:not(:disabled) {
+  background: #eef2f5;
+}
+.window-controls > button:active:not(:disabled) {
+  background: #e2e8ee;
+}
+.window-controls > .window-close:hover:not(:disabled) {
+  background: #b44747;
+  color: #fff;
+}
+.window-controls > .window-close:active:not(:disabled) {
+  background: #993b3b;
+}
+.window-controls > button:focus-visible {
+  outline-offset: -3px;
+}

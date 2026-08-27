@@ -1,0 +1,35 @@
+fn main() {
+    tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
+        tauri_build::AppManifest::new().commands(&[
+            "bootstrap",
+            "runtime_status",
+            "choose_folder",
+            "start_scan",
+            "cancel_scan",
+            "get_scan",
+            "query_entries",
+            "cleanup_suggestions",
+            "select_suggestion_group",
+            "application_units",
+            "space_map",
+            "entry_detail",
+            "groups",
+            "save_settings",
+            "set_annotation",
+            "rules",
+            "preview_cleanup",
+            "execute_cleanup",
+            "cancel_cleanup",
+            "history",
+            "open_location",
+            "open_system",
+            "llm_context",
+            "preview_samples",
+            "analyze",
+            "cancel_analysis",
+            "analysis_results",
+            "test_connection",
+        ]),
+    ))
+    .expect("Tauri build configuration");
+}

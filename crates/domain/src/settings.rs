@@ -1,0 +1,48 @@
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Settings {
+    pub enhanced_scan: bool,
+    pub community_enabled: bool,
+    pub protected_paths: Vec<String>,
+    pub ignored_paths: Vec<String>,
+    pub excluded_llm_paths: Vec<String>,
+    pub labels: BTreeMap<String, String>,
+    pub llm: LlmSettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LlmSettings {
+    pub enabled: bool,
+    pub automatic: bool,
+    pub metadata_consent: bool,
+    pub base_url: String,
+    pub model: String,
+    pub format: String,
+    pub token_parameter: String,
+    pub minimum_bytes: u64,
+    pub max_requests: u32,
+    pub concurrency: u32,
+    pub timeout_seconds: u64,
+}
+
+impl Default for LlmSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            automatic: false,
+            metadata_consent: false,
+            base_url: String::new(),
+            model: String::new(),
+            format: "auto".into(),
+            token_parameter: "max_tokens".into(),
+            minimum_bytes: 100 * 1024 * 1024,
+            max_requests: 10,
+            concurrency: 2,
+            timeout_seconds: 120,
+        }
+    }
+}

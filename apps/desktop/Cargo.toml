@@ -1,0 +1,27 @@
+[package]
+name = "diskvista"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+default-run = "diskvista"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+cleaner-domain = { path = "../../crates/domain" }
+cleaner-engine = { path = "../../crates/engine" }
+cleaner-platform = { path = "../../crates/platform" }
+cleaner-llm = { path = "../../crates/llm" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+sha2.workspace = true
+rfd = "0.15"

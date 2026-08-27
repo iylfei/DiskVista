@@ -1,0 +1,33 @@
+[workspace]
+members = ["crates/domain", "crates/platform", "crates/engine", "crates/llm", "apps/worker", "apps/desktop"]
+default-members = ["crates/domain", "crates/platform", "crates/engine", "crates/llm", "apps/worker"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.5"
+edition = "2021"
+publish = false
+license = "PolyForm-Noncommercial-1.0.0"
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+sha2 = "0.10"
+rusqlite = { version = "0.37", features = ["bundled"] }
+windows = { version = "0.61", features = [
+  "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO",
+  "Win32_System_Ioctl", "Win32_System_Pipes", "Win32_System_Com",
+  "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_RestartManager",
+  "Win32_System_Registry", "Win32_Security", "Win32_Security_Credentials",
+  "Win32_Security_WinTrust", "Win32_Security_Cryptography", "Win32_UI_Shell",
+  "Win32_UI_Shell_Common", "Win32_UI_Shell_PropertiesSystem", "Win32_UI_WindowsAndMessaging",
+  "Management_Deployment", "ApplicationModel", "Storage", "Storage_Search", "Foundation_Collections"
+] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
