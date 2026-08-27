@@ -11,6 +11,7 @@ pub async fn preview_cleanup(
 ) -> Result<CleanupPreview, String> {
     let shared = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _guard = shared.mutations.lock().unwrap();
         let p = cleanup::preview(&shared.store, &scan_id, &entry_ids).map_err(error)?;
         let mut previews = shared.cleanup_previews.lock().unwrap();
         previews.retain(|_, p| chrono::Utc::now().timestamp() - p.created < 600);
@@ -40,6 +41,7 @@ pub async fn execute_cleanup(
     };
     let shared = state.inner().clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
+        let _guard = shared.mutations.lock().unwrap();
         cleanup::execute(
             &shared.store,
             &preview,

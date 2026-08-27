@@ -23,6 +23,8 @@ pub struct SamplePreview {
 }
 pub struct AppState {
     pub store: Store,
+    pub mutations: Mutex<()>,
+    pub initialized: Mutex<bool>,
     pub worker: Mutex<Option<WorkerHandle>>,
     pub cleanup_previews: Mutex<HashMap<String, CleanupPreview>>,
     pub context_previews: Mutex<HashMap<String, ContextPreview>>,
@@ -39,6 +41,8 @@ impl AppState {
     pub fn new(store: Store) -> Shared {
         Arc::new(Self {
             store,
+            mutations: Mutex::new(()),
+            initialized: Mutex::new(false),
             worker: Mutex::new(None),
             cleanup_previews: Mutex::new(HashMap::new()),
             context_previews: Mutex::new(HashMap::new()),
@@ -51,6 +55,21 @@ impl AppState {
             units_snapshot: Mutex::new(None),
             suggestions_snapshot: Mutex::new(None),
         })
+    }
+}
+pub fn classification_key(settings: &Settings) -> Result<String, String> {
+    serde_json::to_string(&(
+        settings.community_enabled,
+        &settings.protected_paths,
+        &settings.ignored_paths,
+        &settings.labels,
+    ))
+    .map_err(error)
+}
+impl AppState {
+    pub fn invalidate_classification(&self) {
+        *self.units_snapshot.lock().unwrap() = None;
+        *self.suggestions_snapshot.lock().unwrap() = None;
     }
 }
 pub fn error(e: impl std::fmt::Display) -> String {

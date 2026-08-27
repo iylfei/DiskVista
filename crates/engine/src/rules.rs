@@ -1,4 +1,4 @@
-use crate::safety::SafetyPolicy;
+use crate::{application_index::ApplicationIndex, safety::SafetyPolicy};
 use anyhow::Result;
 use cleaner_domain::{Assessment, Evidence, FileRecord, InstalledApp, Settings};
 use cleaner_platform::{normalize, within};
@@ -103,6 +103,15 @@ impl RuleSet {
         policy: &SafetyPolicy,
         apps: &[InstalledApp],
     ) -> Assessment {
+        self.classify_indexed(file, policy, &ApplicationIndex::new(apps, policy))
+    }
+
+    pub fn classify_indexed(
+        &self,
+        file: &FileRecord,
+        policy: &SafetyPolicy,
+        apps: &ApplicationIndex,
+    ) -> Assessment {
         let mut a = Assessment {
             category: "unknown".into(),
             owner: None,
@@ -187,14 +196,7 @@ impl RuleSet {
                 source: "用户标注".into(),
                 detail: label.clone(),
             });
-        } else if let Some(app) = apps
-            .iter()
-            .filter(|a| {
-                policy.specific_install_root(&a.install_location)
-                    && within(&file.path, &a.install_location)
-            })
-            .max_by_key(|a| a.install_location.len())
-        {
+        } else if let Some(app) = apps.owner(&p) {
             a.owner = Some(app.name.clone());
             a.confidence = if app.source.contains("快捷方式") {
                 "medium"
@@ -214,14 +216,11 @@ impl RuleSet {
             });
         } else if a.owner.is_none() {
             let name = file.name.to_lowercase();
-            let matches: Vec<_> = apps
-                .iter()
-                .filter(|app| {
-                    let n = app.name.to_lowercase();
-                    file.is_dir && name.len() > 3 && n == name
-                })
-                .take(3)
-                .collect();
+            let matches: Vec<_> = if file.is_dir && name.len() > 3 {
+                apps.named(&name).collect()
+            } else {
+                Vec::new()
+            };
             if !matches.is_empty() {
                 a.owner = Some(
                     matches
@@ -238,10 +237,7 @@ impl RuleSet {
                 });
             }
         }
-        if let Some(reason) = policy
-            .reason(file)
-            .or_else(|| policy.installed_reason(file, apps))
-        {
+        if let Some(reason) = policy.reason(file).or_else(|| apps.installed_reason(file)) {
             a.risk = "protected".into();
             a.protected_reason = Some(reason.clone());
             a.recommendation = reason;

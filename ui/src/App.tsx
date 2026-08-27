@@ -37,7 +37,8 @@ import SettingsPage from "./pages/SettingsPage";
 import BasketPage from "./pages/BasketPage";
 import SuggestionsPage from "./pages/SuggestionsPage";
 import ScanProgress from "./components/ScanProgress";
-import { addSelection, selectionLimit } from "./lib/selection";
+import ScanAnalysisButton from "./components/ScanAnalysisButton";
+import { useCleanupSelection } from "./lib/useCleanupSelection";
 import HistoryPage from "./pages/HistoryPage";
 import RulesPage from "./pages/RulesPage";
 import TitleBar from "./components/TitleBar";
@@ -75,14 +76,14 @@ export default function App() {
   const main = useRef<HTMLElement>(null);
   const fileList = useRef<HTMLDivElement>(null);
   const [detail, setDetail] = useState<FileRecord | null>(null);
-  const [basket, setBasket] = useState<Map<number, FileRecord>>(
-    new globalThis.Map(),
-  );
-  const basketRef = useRef(basket);
-  basketRef.current = basket;
   const [revision, setRevision] = useState(0);
   const [recentResult, setRecentResult] = useState<HistoryItem[]>([]);
   const [busy, setBusy] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
+  const [dismissedAnalysis, setDismissedAnalysis] = useState("");
+  useEffect(() => {
+    if (boot?.analysisProgress.active) setDismissedAnalysis("");
+  }, [boot?.analysisProgress.active]);
   const fail = useCallback(
     (e: unknown) =>
       setError(
@@ -91,6 +92,17 @@ export default function App() {
     [],
   );
   const refresh = useCallback(() => setRevision((v) => v + 1), []);
+  const {
+    basket,
+    pending,
+    message: selectionMessage,
+    select,
+    selectMany,
+    addToBasket,
+    removeFromBasket,
+    clearBasket,
+    reset: resetSelection,
+  } = useCleanupSelection(fail);
   useEffect(() => {
     main.current?.scrollTo(0, 0);
   }, [page, scan?.id]);
@@ -115,7 +127,7 @@ export default function App() {
     if (!scan) return;
     return startScanPolling({
       scanId: scan.id,
-      intervalMs: scanning ? 700 : 4000,
+      intervalMs: scanning ? 700 : boot?.analysisProgress.active ? 1000 : 4000,
       isOverview: () => pageRef.current === "overview",
       onStatus: (current) => {
         setScan((previous) =>
@@ -142,7 +154,14 @@ export default function App() {
         ),
       onError: fail,
     });
-  }, [scan?.id, scan?.status, scanning, fail, refresh]);
+  }, [
+    scan?.id,
+    scan?.status,
+    scanning,
+    boot?.analysisProgress.active,
+    fail,
+    refresh,
+  ]);
   useEffect(() => {
     if (!scan || !(page === "map" && showMapFiles)) {
       setBusy(false);
@@ -197,6 +216,7 @@ export default function App() {
     setIndex(0);
   }, [page, parent, search, risk]);
   async function start(root: string) {
+    if (cleaning) return;
     if (scanning) {
       fail("请先完成或取消当前扫描");
       return;
@@ -205,7 +225,7 @@ export default function App() {
       const s = await api<Scan>("start_scan", { root });
       setScan(s);
       setParent(s.root);
-      setBasket(new globalThis.Map());
+      resetSelection();
       setDetail(null);
       setPage("suggestions");
       setSearch("");
@@ -218,32 +238,13 @@ export default function App() {
     }
   }
   async function browse() {
+    if (cleaning) return;
     try {
       const path = await api<string | null>("choose_folder");
       if (path) await start(path);
     } catch (e) {
       fail(e);
     }
-  }
-  function selectMany(files: FileRecord[]) {
-    try {
-      setBasket(addSelection(basketRef.current, files));
-    } catch (error) {
-      fail(error);
-    }
-  }
-  function select(f: FileRecord) {
-    if (f.assessment.risk === "protected") return;
-    if (!basket.has(f.id) && basket.size >= selectionLimit) {
-      fail("每次最多选择 500 项，请先处理当前已选内容。");
-      return;
-    }
-    setBasket((current) => {
-      const next = new globalThis.Map(current);
-      if (next.has(f.id)) next.delete(f.id);
-      else next.set(f.id, f);
-      return next;
-    });
   }
   async function showDetail(f: FileRecord) {
     if (!scan) return;
@@ -268,7 +269,6 @@ export default function App() {
     } else void showDetail(f);
   }
   async function changed() {
-    refresh();
     try {
       const b = await api<Bootstrap>("bootstrap");
       setBoot(b);
@@ -278,6 +278,8 @@ export default function App() {
         );
     } catch (e) {
       fail(e);
+    } finally {
+      refresh();
     }
   }
   function save(settings: Settings) {
@@ -285,19 +287,28 @@ export default function App() {
     api<Bootstrap>("bootstrap").then(setBoot).catch(fail);
     refresh();
   }
-  const selected = new Set(basket.keys());
+  const selected = new Set(pending.keys());
+  const queued = new Set(basket.keys());
   const title = navigation.find((n) => n[0] === page)?.[1];
+  const analysis = boot?.analysisProgress;
+  const analysisMessageKey = `${analysis?.scanId}:${analysis?.message}`;
   return (
     <div className="app-shell">
       <TitleBar onError={fail} />
       <aside className="sidebar">
         <div className="brand">
           <span className="brand-icon">
-            <HardDrive size={23} />
+            <img
+              src="/app-icon.png"
+              width={38}
+              height={38}
+              alt=""
+              draggable={false}
+            />
           </span>
           <div>
             <strong>DiskVista</strong>
-            <span>磁盘空间分析与清理</span>
+            <span>空间分析与清理</span>
           </div>
         </div>
         <div className="nav-label">功能</div>
@@ -305,6 +316,7 @@ export default function App() {
           {navigation.map(([id, label, Icon]) => (
             <button
               key={id}
+              disabled={cleaning}
               className={page === id ? "active" : ""}
               onClick={() => {
                 setPage(id);
@@ -326,12 +338,25 @@ export default function App() {
           <h1>{title}</h1>
           <div className="top-actions">
             {boot && (
-              <span className="ai-indicator">
-                <Sparkles size={14} />
-                AI {boot.settings.llm.enabled ? "已启用" : "未启用"}
-              </span>
+              <ScanAnalysisButton
+                settings={boot.settings.llm}
+                scan={scan}
+                active={boot.analysisProgress.active}
+                disabled={cleaning}
+                onSettings={() => {
+                  setDetail(null);
+                  setPage("settings");
+                }}
+                onStarted={(progress) => {
+                  setError("");
+                  setDismissedAnalysis("");
+                  setBoot((b) => b && { ...b, analysisProgress: progress });
+                  refresh();
+                }}
+                onError={fail}
+              />
             )}
-            <button onClick={browse} disabled={!!scanning}>
+            <button onClick={browse} disabled={!!scanning || cleaning}>
               <FolderOpen size={16} />
               扫描文件夹
             </button>
@@ -356,19 +381,41 @@ export default function App() {
             onCancel={() => api("cancel_scan").catch(fail)}
           />
         )}
-        {boot?.analysisProgress.active && (
-          <div className="scan-bar ai-bar">
-            <Sparkles size={15} />
-            <span>
-              AI 分析：已完成 {boot.analysisProgress.finished} 项，请求{" "}
-              {boot.analysisProgress.requests}/
-              {boot.analysisProgress.maxRequests}
-            </span>
-            <button onClick={() => api("cancel_analysis").catch(fail)}>
-              取消分析
-            </button>
-          </div>
-        )}
+        {analysis &&
+          (analysis.active ||
+            (analysis.message && analysisMessageKey !== dismissedAnalysis)) && (
+            <div className="scan-bar ai-bar" role="status">
+              <Sparkles size={15} />
+              <span>
+                {analysis.active
+                  ? `AI 分析：已处理 ${analysis.finished}/${analysis.queued} 项，请求 ${analysis.requests}/${analysis.maxRequests}`
+                  : analysis.message}
+                {!analysis.active && analysis.finished > 0 && (
+                  <small>分析结果可在对应文件详情的“AI 辅助解释”中查看。</small>
+                )}
+                {analysis.scanId && analysis.scanId !== scan?.id && (
+                  <small>
+                    分析位置：
+                    {boot?.scans.find((s) => s.id === analysis.scanId)?.root ??
+                      "其他扫描记录"}
+                  </small>
+                )}
+              </span>
+              {analysis.active ? (
+                <button onClick={() => api("cancel_analysis").catch(fail)}>
+                  取消分析
+                </button>
+              ) : (
+                <button
+                  className="icon-button"
+                  aria-label="关闭 AI 分析提示"
+                  onClick={() => setDismissedAnalysis(analysisMessageKey)}
+                >
+                  <X size={16} />
+                </button>
+              )}
+            </div>
+          )}
         <div className="content-and-detail">
           <main className={`main-content ${page}-page`} ref={main}>
             {!boot ? (
@@ -395,7 +442,7 @@ export default function App() {
                         setSearch("");
                         setRisk("");
                         setShowMapFiles(false);
-                        setBasket(new globalThis.Map());
+                        resetSelection();
                         setDetail(null);
                         refresh();
                       }}
@@ -417,9 +464,7 @@ export default function App() {
                     <div className="empty">
                       <FolderOpen size={36} />
                       <h2>先选择一个扫描位置</h2>
-                      <p>
-                        扫描读取文件名、大小等基本信息，不读取普通文件正文。
-                      </p>
+                      <p>扫描后可查看空间分布与清理建议。</p>
                       <button className="primary" onClick={browse}>
                         扫描文件夹
                       </button>
@@ -469,6 +514,7 @@ export default function App() {
                           scan={scan}
                           revision={revision}
                           selected={selected}
+                          queued={queued}
                           onSelect={select}
                           onSelectMany={selectMany}
                           onDetail={showDetail}
@@ -531,6 +577,7 @@ export default function App() {
                           <EntryTable
                             items={items}
                             selected={selected}
+                            queued={queued}
                             onSelect={select}
                             onDetail={showDetail}
                             onOpen={open}
@@ -565,12 +612,13 @@ export default function App() {
                   <BasketPage
                     items={[...basket.values()]}
                     scanId={scan?.id ?? ""}
-                    onRemove={select}
+                    onRemove={removeFromBasket}
                     onFindFiles={() => setPage("suggestions")}
-                    onClear={() => setBasket(new globalThis.Map())}
+                    onClear={clearBasket}
+                    onBusyChange={setCleaning}
                     onDone={(result) => {
                       setRecentResult(result);
-                      setBasket(new globalThis.Map());
+                      clearBasket();
                       setPage("history");
                       refresh();
                     }}
@@ -604,7 +652,10 @@ export default function App() {
               file={detail}
               scanId={scan.id}
               llmEnabled={boot.settings.llm.enabled}
+              analysisActive={boot.analysisProgress.active}
+              revision={revision}
               selected={selected.has(detail.id)}
+              queued={queued.has(detail.id)}
               onClose={() => setDetail(null)}
               onSelect={() => select(detail)}
               onChanged={changed}
@@ -614,11 +665,9 @@ export default function App() {
         </div>
         {["map", "apps", "suggestions"].includes(page) && (
           <SelectionBar
-            items={[...basket.values()]}
-            onOpen={() => {
-              setPage("basket");
-              setDetail(null);
-            }}
+            items={[...pending.values()]}
+            message={selectionMessage}
+            onAdd={addToBasket}
           />
         )}
       </div>

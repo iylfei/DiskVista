@@ -39,8 +39,8 @@ export default function ScanProgress({
       <p>
         已用 {Math.floor(seconds / 60)} 分 {seconds % 60} 秒 ·{" "}
         {scan.status === "aggregating"
-          ? "汇总完成后会显示清理建议。"
-          : "全盘扫描耗时取决于文件数量，可随时取消。扫描不会删除文件。"}
+          ? "正在生成清理建议。"
+          : "扫描耗时取决于文件数量。"}
       </p>
     </div>
   );

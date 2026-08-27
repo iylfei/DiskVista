@@ -48,7 +48,7 @@ describe("plain-language help", () => {
     expect(html).not.toContain("每个文件，都值得");
     expect(html).toContain("清理前须知");
   });
-  it("keeps recycling and recovery warnings visible without opening help", () => {
+  it("offers direct recycling without repeated confirmation copy", () => {
     const html = renderToStaticMarkup(
       <BasketPage
         items={[]}
@@ -60,9 +60,9 @@ describe("plain-language help", () => {
         onError={() => {}}
       />,
     );
-    expect(html).toContain("不会立刻腾出空间");
-    expect(html).toContain("还原");
-    expect(html).toContain("不会自动清空回收站");
+    expect(html).toContain("检查并移入回收站");
+    expect(html).not.toContain("先预览，再确认");
+    expect(html).not.toContain("需要你确认");
     expect(html).toContain("去查看清理建议");
   });
   it("offers the supplied scan locations and disables scanning controls while busy", () => {

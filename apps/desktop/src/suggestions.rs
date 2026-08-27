@@ -12,7 +12,7 @@ fn with_index<T>(
     let key = format!(
         "{}:{}",
         scan,
-        serde_json::to_string(&state.store.settings().map_err(error)?).map_err(error)?
+        crate::state::classification_key(&state.store.settings().map_err(error)?)?
     );
     let mut cached = state.suggestions_snapshot.lock().unwrap();
     if cached.as_ref().is_none_or(|(old, _)| old != &key) {
@@ -29,7 +29,7 @@ pub async fn cleanup_suggestions(
     let state = state.inner().clone();
     crate::background::read(move || {
         with_index(&state, &query.scan_id, |index| {
-            Ok(suggestions::page(index, &query))
+            suggestions::page(index, &query)
         })
     })
     .await

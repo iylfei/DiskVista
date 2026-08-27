@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { HardDrive, Minus, Square, Copy, X } from "lucide-react";
+import { Minus, Square, Copy, X } from "lucide-react";
 import { observeMaximized } from "../lib/windowState";
 import "./titlebar.css";
 
@@ -20,7 +20,13 @@ export function TitleBarView({
   return (
     <header className="window-titlebar" aria-label="应用标题栏">
       <div className="window-drag-region" data-tauri-drag-region>
-        <HardDrive size={15} aria-hidden="true" />
+        <img
+          src="/app-icon.png"
+          width={18}
+          height={18}
+          alt=""
+          draggable={false}
+        />
         <span>DiskVista</span>
       </div>
       <div className="window-controls" role="group" aria-label="窗口控制">

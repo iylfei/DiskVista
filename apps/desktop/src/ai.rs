@@ -14,7 +14,7 @@ use tauri::State;
 fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
-fn budget(state: &Shared, scan: &str, max: u32) -> Budget {
+pub(crate) fn budget(state: &Shared, scan: &str, max: u32) -> Budget {
     let mut budgets = state.budgets.lock().unwrap();
     let entry = budgets.entry(scan.into()).or_insert_with(|| {
         let key = format!("llm-budget:{scan}");
@@ -30,7 +30,11 @@ fn budget(state: &Shared, scan: &str, max: u32) -> Budget {
     entry.maximum = max;
     entry.clone()
 }
-fn checked_context(state: &Shared, scan: &str, id: i64) -> Result<AnalysisContext, String> {
+pub(crate) fn checked_context(
+    state: &Shared,
+    scan: &str,
+    id: i64,
+) -> Result<AnalysisContext, String> {
     let context = context::build(&state.store, scan, id).map_err(error)?;
     let f = state.store.entry(scan, id).map_err(error)?;
     if context::fingerprint(&live_tree(&f.path).map_err(error)?) != context.fingerprint {
@@ -107,12 +111,18 @@ pub async fn preview_samples(
     .map_err(error)?
 }
 
-fn run_one(
+pub(crate) enum AnalysisOutcome {
+    Completed,
+    Cached,
+    Failed(String),
+}
+
+pub(crate) fn run_one(
     state: &Shared,
     context: AnalysisContext,
     samples: Vec<Sample>,
     b: &Budget,
-) -> Result<(), String> {
+) -> Result<AnalysisOutcome, String> {
     let settings = state.store.settings().map_err(error)?;
     if !settings.llm.enabled {
         return Err("AI 已关闭".into());
@@ -132,7 +142,10 @@ fn run_one(
                     && r.config_hash == config
             })
     {
-        return Ok(());
+        let mut progress = state.progress.lock().unwrap();
+        progress.finished += 1;
+        progress.requests = b.requests.load(Ordering::Relaxed);
+        return Ok(AnalysisOutcome::Cached);
     }
     let fresh = checked_context(state, &context.scan_id, context.entry_id)?;
     if context.fingerprint != fresh.fingerprint {
@@ -171,7 +184,11 @@ fn run_one(
     let mut p = state.progress.lock().unwrap();
     p.finished += 1;
     p.requests = b.requests.load(Ordering::Relaxed);
-    Ok(())
+    Ok(if result.status == "success" {
+        AnalysisOutcome::Completed
+    } else {
+        AnalysisOutcome::Failed(result.message)
+    })
 }
 #[tauri::command]
 pub fn analyze(
@@ -229,6 +246,7 @@ pub fn analyze(
         }
     };
     *state.progress.lock().unwrap() = AnalysisProgress {
+        scan_id: Some(context.scan_id.clone()),
         active: true,
         queued: 1,
         finished: 0,
@@ -238,77 +256,17 @@ pub fn analyze(
     };
     let state = state.inner().clone();
     std::thread::spawn(move || {
-        if let Err(e) = run_one(&state, context, samples, &b) {
-            state.progress.lock().unwrap().message = e;
-        }
-        state.progress.lock().unwrap().active = false;
+        let message = match run_one(&state, context, samples, &b) {
+            Ok(AnalysisOutcome::Completed) => "AI 分析完成，结果在文件详情中查看。".into(),
+            Ok(AnalysisOutcome::Cached) => "已有可用的 AI 分析结果，未重复请求。".into(),
+            Ok(AnalysisOutcome::Failed(message)) | Err(message) => message,
+        };
+        let mut progress = state.progress.lock().unwrap();
+        progress.message = message;
+        progress.active = false;
         state.analysis_busy.store(false, Ordering::SeqCst);
     });
     Ok(())
-}
-pub fn auto_analyze(state: Shared, scan_id: &str) {
-    let Ok(settings) = state.store.settings() else {
-        return;
-    };
-    if !settings.llm.enabled || !settings.llm.automatic || !settings.llm.metadata_consent {
-        return;
-    }
-    if state.analysis_busy.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    let b = budget(&state, scan_id, settings.llm.max_requests);
-    b.cancel.store(false, Ordering::SeqCst);
-    let candidates = state
-        .store
-        .query(&EntryQuery {
-            scan_id: scan_id.into(),
-            risk: Some("review".into()),
-            minimum_bytes: settings.llm.minimum_bytes,
-            uncertain_only: true,
-            limit: settings.llm.max_requests.min(100),
-            ..Default::default()
-        })
-        .map(|p| {
-            p.items
-                .into_iter()
-                .filter(|f| f.assessment.rule_id.is_none() && f.assessment.confidence == "low")
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    *state.progress.lock().unwrap() = AnalysisProgress {
-        active: true,
-        queued: candidates.len() as u32,
-        finished: 0,
-        requests: b.requests.load(Ordering::Relaxed),
-        max_requests: b.maximum,
-        message: "已授权的自动疑难项分析".into(),
-    };
-    // Bounded workers, with no automatic content sampling.
-    let queue = std::sync::Mutex::new(candidates);
-    std::thread::scope(|scope| {
-        for _ in 0..settings.llm.concurrency.clamp(1, 2) {
-            let b = b.clone();
-            let state = &state;
-            let queue = &queue;
-            scope.spawn(move || loop {
-                if b.cancel.load(Ordering::Relaxed)
-                    || b.requests.load(Ordering::Relaxed) >= b.maximum
-                {
-                    break;
-                }
-                let f = queue.lock().unwrap().pop();
-                let Some(f) = f else { break };
-                match checked_context(state, scan_id, f.id)
-                    .and_then(|c| run_one(state, c, vec![], &b))
-                {
-                    Ok(()) => {}
-                    Err(e) => state.progress.lock().unwrap().message = e,
-                };
-            });
-        }
-    });
-    state.progress.lock().unwrap().active = false;
-    state.analysis_busy.store(false, Ordering::SeqCst);
 }
 #[tauri::command]
 pub fn cancel_analysis(state: State<'_, Shared>) {
@@ -317,38 +275,6 @@ pub fn cancel_analysis(state: State<'_, Shared>) {
     }
     state.progress.lock().unwrap().message =
         "已请求取消；在途 HTTP 请求将在响应或超时后结束，不启动新请求".into();
-}
-#[tauri::command]
-pub async fn analysis_results(
-    state: State<'_, Shared>,
-    scan_id: String,
-    entry_id: i64,
-) -> Result<Vec<AnalysisResult>, String> {
-    let state = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut results = state.store.analyses(&scan_id, entry_id).map_err(error)?;
-        if !results.is_empty() {
-            let current = checked_context(&state, &scan_id, entry_id).ok();
-            let settings = state.store.settings().map_err(error)?;
-            let rules = RuleSet::load(settings.community_enabled).map_err(error)?;
-            let config = client::config_hash(&settings.llm, &rules.version);
-            for r in &mut results {
-                if r.status == "success"
-                    && (current
-                        .as_ref()
-                        .is_none_or(|c| c.fingerprint != r.fingerprint)
-                        || r.config_hash != config)
-                {
-                    r.status = "stale".into();
-                    r.message = "目标、规则或模型配置变化，结果已过期".into();
-                    state.store.save_analysis(r).map_err(error)?;
-                }
-            }
-        }
-        Ok(results)
-    })
-    .await
-    .map_err(error)?
 }
 #[tauri::command]
 pub async fn test_connection(
@@ -365,25 +291,17 @@ pub async fn test_connection(
         None
     };
     tauri::async_runtime::spawn_blocking(move || {
-        let budget = Budget::new(3);
-        let r = client::analyze(
-            &settings,
-            key.as_deref(),
-            &client::synthetic_context(),
-            &json!([]),
-            &budget,
-        )
-        .map_err(error)?;
-        Ok(format!(
-            "连接和结构校验通过；仅发送合成数据。请求 {} 次；输入用量 {}，输出用量 {}。",
-            budget.requests.load(Ordering::Relaxed),
-            r.prompt_tokens
-                .map(|v| v.to_string())
-                .unwrap_or("未知".into()),
-            r.completion_tokens
-                .map(|v| v.to_string())
-                .unwrap_or("未知".into())
-        ))
+        let r =
+            cleaner_llm::connection::test_connection(&settings, key.as_deref()).map_err(error)?;
+        let mut message = if r.reply_complete {
+            "连接成功，模型已回复。".to_owned()
+        } else {
+            "连接成功，服务已接受测试请求。".to_owned()
+        };
+        if let (Some(input), Some(output)) = (r.prompt_tokens, r.completion_tokens) {
+            message.push_str(&format!("输入 {input} token，输出 {output} token。"));
+        }
+        Ok(message)
     })
     .await
     .map_err(error)?

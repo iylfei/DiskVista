@@ -34,6 +34,7 @@
     "allow-llm-context",
     "allow-preview-samples",
     "allow-analyze",
+    "allow-analyze-scan",
     "allow-cancel-analysis",
     "allow-analysis-results",
     "allow-test-connection"

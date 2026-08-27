@@ -13,6 +13,7 @@ interface Props {
   quietReview?: boolean;
   items: FileRecord[];
   selected: Set<number>;
+  queued?: Set<number>;
   onSelect: (file: FileRecord) => void;
   onDetail: (file: FileRecord) => void;
   onOpen: (file: FileRecord) => void;
@@ -24,6 +25,7 @@ interface Props {
 export default function EntryTable({
   items,
   selected,
+  queued,
   onSelect,
   onDetail,
   onOpen,
@@ -74,6 +76,7 @@ export default function EntryTable({
             {rows.getVirtualItems().map((row) => {
               const f = items[row.index];
               const protectedItem = f.assessment.risk === "protected";
+              const inBasket = queued?.has(f.id) ?? false;
               return (
                 <div
                   className="file-row data-row"
@@ -86,9 +89,13 @@ export default function EntryTable({
                   <input
                     type="checkbox"
                     aria-label={`选择 ${f.name}`}
-                    checked={selected.has(f.id)}
-                    disabled={protectedItem}
-                    title={f.assessment.protectedReason ?? "加入待清理"}
+                    checked={inBasket || selected.has(f.id)}
+                    disabled={protectedItem || inBasket}
+                    title={
+                      inBasket
+                        ? "已在待清理清单中"
+                        : (f.assessment.protectedReason ?? "选择此项")
+                    }
                     onChange={() => onSelect(f)}
                   />
                   <button

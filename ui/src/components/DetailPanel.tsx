@@ -5,11 +5,15 @@ import type { FileRecord, AnalysisContext, AnalysisResult } from "../lib/types";
 import Modal from "./Modal";
 import HelpTip from "./HelpTip";
 import { helpText } from "../lib/helpText";
+import { startAnalysisPolling } from "../lib/analysisPolling";
 export default function DetailPanel({
   file,
   scanId,
   llmEnabled,
+  analysisActive = false,
+  revision = 0,
   selected = false,
+  queued = false,
   onClose,
   onSelect,
   onChanged,
@@ -18,7 +22,10 @@ export default function DetailPanel({
   file: FileRecord;
   scanId: string;
   llmEnabled: boolean;
+  analysisActive?: boolean;
+  revision?: number;
   selected?: boolean;
+  queued?: boolean;
   onClose: () => void;
   onSelect: () => void;
   onChanged: () => void;
@@ -36,40 +43,36 @@ export default function DetailPanel({
   const [results, setResults] = useState<AnalysisResult[]>([]);
   const [busy, setBusy] = useState(false);
   const [label, setLabel] = useState("");
+  const [reloadResults, setReloadResults] = useState(0);
+  const [annotating, setAnnotating] = useState(false);
+  const [refreshingResults, setRefreshingResults] = useState(false);
   useEffect(() => {
     setResults([]);
     setContext(null);
     setSamplePreview(null);
-    let live = true;
-    let pending = false;
-    const refresh = async () => {
-      if (pending || !live) return;
-      pending = true;
-      try {
-        const r = await api<AnalysisResult[]>("analysis_results", {
-          scanId,
-          entryId: file.id,
-        });
-        if (live) setResults(r);
-      } catch {
-        // A transient refresh failure must not discard an existing result.
-      } finally {
-        pending = false;
-      }
-    };
-    refresh();
-    const t = setInterval(refresh, 3000);
-    return () => {
-      live = false;
-      clearInterval(t);
-    };
   }, [file.id, scanId]);
+  useEffect(
+    () =>
+      startAnalysisPolling({
+        scanId,
+        entryId: file.id,
+        active: analysisActive,
+        onResults: setResults,
+        onError,
+        onPending: setRefreshingResults,
+      }),
+    [file.id, scanId, analysisActive, revision, reloadResults, onError],
+  );
   async function act(kind: string, value = "") {
+    if (annotating) return;
+    setAnnotating(true);
     try {
       await api("set_annotation", { scanId, entryId: file.id, kind, value });
       onChanged();
     } catch (e) {
       onError(e);
+    } finally {
+      setAnnotating(false);
     }
   }
   async function preview() {
@@ -215,12 +218,16 @@ export default function DetailPanel({
             <FolderOpen size={16} />
             在资源管理器中查看
           </button>
-          <button onClick={() => act("protect")}>
+          <button disabled={annotating} onClick={() => act("protect")}>
             <ShieldPlus size={16} />
             保护此路径
           </button>
-          <button onClick={() => act("ignore")}>忽略此项目</button>
-          <button onClick={() => act("exclude_llm")}>禁止发送 AI</button>
+          <button disabled={annotating} onClick={() => act("ignore")}>
+            忽略此项目
+          </button>
+          <button disabled={annotating} onClick={() => act("exclude_llm")}>
+            禁止发送 AI
+          </button>
         </div>
         <label>
           手动标注归属
@@ -232,7 +239,7 @@ export default function DetailPanel({
               maxLength={100}
             />
             <button
-              disabled={!label.trim()}
+              disabled={annotating || !label.trim()}
               onClick={() => act("label", label)}
             >
               保存
@@ -305,16 +312,22 @@ export default function DetailPanel({
               )}
             </div>
           ))}
+          <button
+            disabled={analysisActive || refreshingResults}
+            onClick={() => setReloadResults((v) => v + 1)}
+          >
+            {refreshingResults ? "正在刷新…" : "刷新分析记录"}
+          </button>
         </section>
       </div>
       <footer>
         <button
           className="primary"
-          disabled={a.risk === "protected"}
-          aria-pressed={selected}
+          disabled={a.risk === "protected" || queued}
+          aria-pressed={selected || queued}
           onClick={onSelect}
         >
-          {selected ? "取消选择" : "加入待清理"}
+          {queued ? "已在待清理清单中" : selected ? "取消选择" : "选择此项"}
         </button>
       </footer>
       {context && (

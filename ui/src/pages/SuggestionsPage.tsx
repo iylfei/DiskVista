@@ -11,6 +11,7 @@ export default function SuggestionsPage({
   scan,
   revision,
   selected,
+  queued,
   onSelect,
   onSelectMany,
   onDetail,
@@ -22,6 +23,7 @@ export default function SuggestionsPage({
   scan: Scan;
   revision: number;
   selected: Set<number>;
+  queued: Set<number>;
   onSelect: (file: FileRecord) => void;
   onSelectMany: (files: FileRecord[]) => void;
   onDetail: (file: FileRecord) => void;
@@ -135,7 +137,7 @@ export default function SuggestionsPage({
   return (
     <section className="suggestions-content">
       <p className="suggestions-intro">
-        先查看已识别的临时文件和缓存；下载、照片和用途不明的文件需要你确认。不会自动选择文件。
+        按类别查找文件，勾选后添加到待清理清单。
       </p>
       <div className="list-toolbar">
         <div className="search-box">
@@ -233,7 +235,7 @@ export default function SuggestionsPage({
                     : undefined
                 }
               >
-                {selecting ? "正在加入…" : "选择这一类"}
+                {selecting ? "正在选择…" : "选择这一类"}
               </button>
             </div>
           )}
@@ -246,7 +248,7 @@ export default function SuggestionsPage({
       ) : loadError ? (
         <div className="empty compact">
           <h2>无法读取清理建议</h2>
-          <p>请重试，扫描记录不会被删除。</p>
+          <p>请稍后重试。</p>
           <button onClick={() => setRetry((value) => value + 1)}>重试</button>
         </div>
       ) : !data?.total ? (
@@ -265,6 +267,7 @@ export default function SuggestionsPage({
           page={page}
           onPage={setPage}
           selected={selected}
+          queued={queued}
           onSelect={onSelect}
           onDetail={onDetail}
           onOpen={onOpen}

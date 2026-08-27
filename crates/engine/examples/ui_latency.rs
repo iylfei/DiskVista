@@ -37,6 +37,9 @@ fn main() -> anyhow::Result<()> {
         let policy = timed("safety context", || SafetyPolicy::new(settings));
         let apps = timed("snapshot app list", || store.apps(&scan.id))?;
         println!("snapshot: {} files, {} apps", scan.files, apps.len());
+        let apps = timed("application path index", || {
+            cleaner_engine::application_index::ApplicationIndex::new(&apps, &policy)
+        });
         for (name, parent, suggestions) in [
             ("directory page", Some(scan.root.clone()), false),
             ("suggestions page", None, true),
@@ -53,7 +56,7 @@ fn main() -> anyhow::Result<()> {
             })?;
             timed("reclassify 100 rows", || {
                 for file in &mut page.items {
-                    file.assessment = rules.classify(file, &policy, &apps);
+                    file.assessment = rules.classify_indexed(file, &policy, &apps);
                 }
             });
             timed("serialize page", || serde_json::to_vec(&page))?;

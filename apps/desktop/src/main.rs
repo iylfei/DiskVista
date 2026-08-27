@@ -1,9 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod ai;
+mod analysis_results;
 mod background;
 mod commands;
 mod locations;
+mod mutations;
 mod operations;
+mod scan_analysis;
 mod state;
 mod suggestions;
 mod window;
@@ -16,7 +19,6 @@ fn main() {
         .setup(|app| {
             let root = app.path().app_local_data_dir()?;
             let store = cleaner_engine::store::Store::open(root.join("index.sqlite"))?;
-            store.recover_interrupted()?;
             app.manage(state::AppState::new(store));
             if let Some(window) = app.get_webview_window("main") {
                 // A monitor-query failure must not prevent opening the local application.
@@ -39,8 +41,8 @@ fn main() {
             commands::space_map,
             commands::entry_detail,
             commands::groups,
-            commands::save_settings,
-            commands::set_annotation,
+            mutations::save_settings,
+            mutations::set_annotation,
             commands::rules,
             operations::preview_cleanup,
             operations::execute_cleanup,
@@ -51,8 +53,9 @@ fn main() {
             ai::llm_context,
             ai::preview_samples,
             ai::analyze,
+            scan_analysis::analyze_scan,
             ai::cancel_analysis,
-            ai::analysis_results,
+            analysis_results::analysis_results,
             ai::test_connection
         ])
         .run(tauri::generate_context!())

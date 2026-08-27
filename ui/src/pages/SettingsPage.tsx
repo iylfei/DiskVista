@@ -16,12 +16,16 @@ export default function SettingsPage({
 }) {
   const [draft, setDraft] = useState<Settings>(structuredClone(settings));
   const [key, setKey] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState<"save" | "test" | null>(null);
+  const busy = pending !== null;
   const [note, setNote] = useState("");
+  const [testError, setTestError] = useState("");
   const llm = (change: Partial<Settings["llm"]>) =>
     setDraft((s) => ({ ...s, llm: { ...s.llm, ...change } }));
   async function save() {
-    setBusy(true);
+    setPending("save");
+    setNote("");
+    setTestError("");
     try {
       const saved = await api<Settings>("save_settings", {
         settings: draft,
@@ -38,11 +42,13 @@ export default function SettingsPage({
     } catch (e) {
       onError(e);
     } finally {
-      setBusy(false);
+      setPending(null);
     }
   }
   async function test() {
-    setBusy(true);
+    setPending("test");
+    setNote("");
+    setTestError("");
     try {
       const result = await api<string>("test_connection", {
         settings: draft.llm,
@@ -50,13 +56,13 @@ export default function SettingsPage({
       });
       setNote(result);
     } catch (e) {
-      onError(e);
+      setTestError(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      setPending(null);
     }
   }
   return (
-    <div className="settings-page">
+    <div className="settings-content">
       <section className="panel">
         <h2>扫描设置</h2>
         <label className="check-line" htmlFor="enhanced-scan">
@@ -77,6 +83,25 @@ export default function SettingsPage({
         <p className="muted">
           默认关闭，可能需要管理员许可。无法使用时会自动改为完整扫描，不修改系统设置。
         </p>
+        <label htmlFor="scan-retention">
+          <span>扫描记录保留数量（每个扫描位置）</span>
+          <select
+            id="scan-retention"
+            value={draft.scanRetention ?? 0}
+            onChange={(e) =>
+              setDraft({ ...draft, scanRetention: Number(e.target.value) })
+            }
+          >
+            <option value={0}>保留全部</option>
+            <option value={5}>最近 5 次</option>
+            <option value={10}>最近 10 次</option>
+            <option value={30}>最近 30 次</option>
+            <option value={100}>最近 100 次</option>
+          </select>
+        </label>
+        <p className="muted">
+          保存后，下次启动时移除较早的扫描记录；增量扫描需要的记录会额外保留。不删除原文件，也不移除回收操作历史。
+        </p>
       </section>
       <section className="panel">
         <div className="section-heading">
@@ -95,6 +120,13 @@ export default function SettingsPage({
             启用 AI
           </label>
         </div>
+        {draft.llm.enabled &&
+          draft.llm.automatic &&
+          !draft.llm.metadataConsent && (
+            <p className="notice ai-setup-notice" role="status">
+              自动分析待授权：允许发送基本信息并保存后，将在下次扫描完成时分析符合条件的项目。
+            </p>
+          )}
         <div className="form-grid">
           <label htmlFor="ai-api-url">
             <span>
@@ -206,6 +238,7 @@ export default function SettingsPage({
           />
           扫描完成后，自动分析未识别的大型项目
         </label>
+        <p className="muted">分析结果可在对应文件详情的“AI 辅助解释”中查看。</p>
         <label className="check-line" htmlFor="ai-metadata-consent">
           <input
             id="ai-metadata-consent"
@@ -271,8 +304,12 @@ export default function SettingsPage({
           重试也计入请求上限。没有服务商提供的用量或价格时，不估算费用。
         </p>
         <div className="actions">
-          <button disabled={busy} onClick={test}>
-            测试连接（不发送文件信息）
+          <button
+            disabled={busy}
+            onClick={test}
+            title="仅发送固定测试消息，不发送文件信息"
+          >
+            {pending === "test" ? "正在测试…" : "测试连接"}
           </button>
           <button disabled={busy} className="primary" onClick={save}>
             保存设置
@@ -281,6 +318,11 @@ export default function SettingsPage({
         {note && (
           <p className="success-text" role="status">
             {note}
+          </p>
+        )}
+        {testError && (
+          <p className="connection-error" role="alert">
+            {testError}
           </p>
         )}
       </section>
@@ -320,7 +362,9 @@ export default function SettingsPage({
           <button
             disabled={busy}
             onClick={async () => {
-              setBusy(true);
+              setPending("save");
+              setNote("");
+              setTestError("");
               try {
                 const saved = await api<Settings>("save_settings", {
                   settings: {
@@ -337,7 +381,7 @@ export default function SettingsPage({
               } catch (e) {
                 onError(e);
               } finally {
-                setBusy(false);
+                setPending(null);
               }
             }}
           >
@@ -346,7 +390,9 @@ export default function SettingsPage({
           <button
             disabled={busy}
             onClick={async () => {
-              setBusy(true);
+              setPending("save");
+              setNote("");
+              setTestError("");
               try {
                 const saved = await api<Settings>("save_settings", {
                   settings,
@@ -359,7 +405,7 @@ export default function SettingsPage({
               } catch (e) {
                 onError(e);
               } finally {
-                setBusy(false);
+                setPending(null);
               }
             }}
           >

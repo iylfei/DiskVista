@@ -73,6 +73,7 @@ export interface LlmSettings {
   timeoutSeconds: number;
 }
 export interface Settings {
+  scanRetention: number;
   enhancedScan: boolean;
   communityEnabled: boolean;
   protectedPaths: string[];
@@ -82,6 +83,7 @@ export interface Settings {
   llm: LlmSettings;
 }
 export interface Progress {
+  scanId?: string | null;
   active: boolean;
   queued: number;
   finished: number;

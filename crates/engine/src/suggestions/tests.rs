@@ -26,11 +26,28 @@ fn file(
         ..Default::default()
     }
 }
-fn index(entries: Vec<FileRecord>) -> SuggestionIndex {
-    SuggestionIndex {
-        entries,
-        names: HashMap::from([("cache".into(), "应用缓存".into())]),
+struct Fixture {
+    index: SuggestionIndex,
+    _dir: tempfile::TempDir,
+}
+impl std::ops::Deref for Fixture {
+    type Target = SuggestionIndex;
+    fn deref(&self) -> &Self::Target {
+        &self.index
     }
+}
+fn index(entries: Vec<FileRecord>) -> Fixture {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("index.db")).unwrap();
+    Store::insert_batch(&mut store.connection().unwrap(), "s", &entries).unwrap();
+    let index = SuggestionIndex::from_records(
+        &store,
+        "s",
+        HashMap::from([("cache".into(), "应用缓存".into())]),
+        entries.into_iter().map(Ok),
+    )
+    .unwrap();
+    Fixture { index, _dir: dir }
 }
 fn query() -> SuggestionQuery {
     SuggestionQuery {
@@ -54,7 +71,7 @@ fn groups_collapse_nested_files_and_preserve_size_and_purpose() {
             "review",
         ),
     ]);
-    let result = page(&data, &query());
+    let result = page(&data, &query()).unwrap();
     assert_eq!(result.total, 2);
     assert_eq!(result.groups[0].name, "应用缓存");
     assert_eq!(result.groups[0].occupied_bytes, 120);
@@ -63,12 +80,12 @@ fn groups_collapse_nested_files_and_preserve_size_and_purpose() {
     assert_eq!(result.groups[1].id, "large-files");
     let mut q = query();
     q.risk = "low".into();
-    let low = page(&data, &q);
+    let low = page(&data, &q).unwrap();
     assert_eq!(low.items[0].id, 2);
     assert_eq!(low.groups[0].occupied_bytes, 60);
     q.risk.clear();
     q.search = "recent".into();
-    assert_eq!(page(&data, &q).items[0].id, 3);
+    assert_eq!(page(&data, &q).unwrap().items[0].id, 3);
 }
 
 #[test]
@@ -85,7 +102,7 @@ fn group_selection_is_explicit_and_never_includes_protected_or_unknown_files() {
         ),
         file(3, "D:\\personal.dat", 200_000_000, false, None, "review"),
     ]);
-    assert_eq!(page(&data, &query()).total, 2);
+    assert_eq!(page(&data, &query()).unwrap().total, 2);
     assert!(selection(&data, &query()).is_err());
     let mut q = query();
     q.group = Some("rule:cache".into());
@@ -98,7 +115,7 @@ fn group_selection_is_explicit_and_never_includes_protected_or_unknown_files() {
         vec![1]
     );
     q.risk = "protected".into();
-    assert_eq!(page(&data, &q).items[0].id, 2);
+    assert_eq!(page(&data, &q).unwrap().items[0].id, 2);
     assert!(selection(&data, &q).unwrap().is_empty());
     q.risk.clear();
     q.group = Some("large-files".into());
@@ -126,8 +143,23 @@ fn large_batches_require_a_narrower_explicit_selection() {
     assert!(selection(&data, &q).is_err());
     q.offset = 100;
     q.limit = 100;
-    assert_eq!(page(&data, &q).items.len(), 100);
-    assert_eq!(page(&data, &q).total, 501);
+    assert_eq!(page(&data, &q).unwrap().items.len(), 100);
+    assert_eq!(page(&data, &q).unwrap().total, 501);
+    assert_eq!(data.views.lock().unwrap().len(), 1);
+    q.offset = 0;
+    let first = page(&data, &q).unwrap();
+    q.offset = 100;
+    let next = page(&data, &q).unwrap();
+    assert!(first
+        .items
+        .iter()
+        .all(|f| next.items.iter().all(|n| f.id != n.id)));
+    assert_eq!(data.views.lock().unwrap().len(), 1);
+    for search in ["1", "2", "3", "4", "5", "6"] {
+        q.search = search.into();
+        page(&data, &q).unwrap();
+    }
+    assert_eq!(data.views.lock().unwrap().len(), 4);
 }
 
 #[test]
@@ -158,7 +190,10 @@ fn old_snapshots_respect_current_protection_and_exclude_unidentified_directories
         ],
     )
     .unwrap();
-    assert_eq!(page(&build(&store, "s").unwrap(), &query()).total, 1);
+    assert_eq!(
+        page(&build(&store, "s").unwrap(), &query()).unwrap().total,
+        1
+    );
     store
         .put(
             "settings",
@@ -169,11 +204,14 @@ fn old_snapshots_respect_current_protection_and_exclude_unidentified_directories
         )
         .unwrap();
     let fresh = build(&store, "s").unwrap();
-    assert_eq!(page(&fresh, &query()).total, 0);
+    assert_eq!(page(&fresh, &query()).unwrap().total, 0);
     let mut q = query();
     q.risk = "protected".into();
-    assert_eq!(page(&fresh, &q).total, 1);
-    assert_eq!(page(&fresh, &q).items[0].assessment.risk, "protected");
+    assert_eq!(page(&fresh, &q).unwrap().total, 1);
+    assert_eq!(
+        page(&fresh, &q).unwrap().items[0].assessment.risk,
+        "protected"
+    );
 
     let cache = format!(
         "{}\\CleanerSuggestionParent",
@@ -197,8 +235,13 @@ fn old_snapshots_respect_current_protection_and_exclude_unidentified_directories
     .unwrap();
     let fresh = build(&store, "s").unwrap();
     assert!(!page(&fresh, &query())
+        .unwrap()
         .items
         .iter()
         .any(|file| file.path == cache));
-    assert!(page(&fresh, &q).items.iter().any(|file| file.path == cache));
+    assert!(page(&fresh, &q)
+        .unwrap()
+        .items
+        .iter()
+        .any(|file| file.path == cache));
 }

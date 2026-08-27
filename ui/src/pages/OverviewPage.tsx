@@ -39,7 +39,7 @@ export default function OverviewPage({
       <section className="welcome">
         <div>
           <h2>找出占用空间，选择不再需要的文件</h2>
-          <p>扫描只查看文件信息，不会删除文件。</p>
+          <p>选择磁盘或文件夹，查看空间占用。</p>
           <div className="scan-start-actions">
             <select
               aria-label="选择要扫描的磁盘"

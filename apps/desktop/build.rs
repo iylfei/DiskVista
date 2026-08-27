@@ -26,6 +26,7 @@ fn main() {
             "llm_context",
             "preview_samples",
             "analyze",
+            "analyze_scan",
             "cancel_analysis",
             "analysis_results",
             "test_connection",

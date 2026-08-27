@@ -32,6 +32,16 @@ pub async fn bootstrap(
 ) -> Result<Bootstrap, String> {
     let state = state.inner().clone();
     crate::background::read(move || {
+        {
+            let _guard = state.mutations.lock().unwrap();
+            let mut initialized = state.initialized.lock().unwrap();
+            if !*initialized {
+                state.store.recover_interrupted().map_err(error)?;
+                let keep = state.store.settings().map_err(error)?.scan_retention;
+                state.store.prune_scans(keep).map_err(error)?;
+                *initialized = true;
+            }
+        }
         let scans = state.store.scans().map_err(error)?;
         Ok(Bootstrap {
             analysis_progress: current_progress(&state, &scans),
@@ -47,8 +57,12 @@ pub async fn bootstrap(
 }
 fn current_progress(state: &Shared, scans: &[Scan]) -> AnalysisProgress {
     let mut progress = state.progress.lock().unwrap().clone();
-    if let Some(scan) = scans.first() {
-        if let Some(b) = state.budgets.lock().unwrap().get(&scan.id) {
+    if let Some(scan_id) = progress
+        .scan_id
+        .as_deref()
+        .or_else(|| scans.first().map(|scan| scan.id.as_str()))
+    {
+        if let Some(b) = state.budgets.lock().unwrap().get(scan_id) {
             progress.requests = b.requests.load(Ordering::Relaxed);
             progress.max_requests = b.maximum;
         }
@@ -113,6 +127,7 @@ pub async fn start_scan(state: State<'_, Shared>, root: String) -> Result<Scan, 
         .map_err(error)?
 }
 fn start_scan_inner(state: Shared, root: String) -> Result<Scan, String> {
+    let _guard = state.mutations.lock().unwrap();
     if state.cleaning.load(Ordering::SeqCst) {
         return Err("正在回收，暂时不能开始新扫描".into());
     }
@@ -187,7 +202,7 @@ fn start_scan_inner(state: Shared, root: String) -> Result<Scan, String> {
         }
         if let Ok(s) = shared.store.scan(&scan_id) {
             if s.status == "complete" {
-                crate::ai::auto_analyze(shared.clone(), &scan_id);
+                crate::scan_analysis::auto_analyze(shared.clone(), &scan_id);
             } else if ["scanning", "queued", "aggregating"].contains(&s.status.as_str()) {
                 let mut s = s;
                 s.status = "interrupted".into();
@@ -224,9 +239,12 @@ pub async fn query_entries(
         let settings = state.store.settings().map_err(error)?;
         let rules = RuleSet::load(settings.community_enabled).map_err(error)?;
         let policy = SafetyPolicy::new(settings);
-        let apps = state.store.apps(&query.scan_id).map_err(error)?;
+        let apps = cleaner_engine::application_index::ApplicationIndex::new(
+            &state.store.apps(&query.scan_id).map_err(error)?,
+            &policy,
+        );
         for f in &mut result.items {
-            f.assessment = rules.classify(f, &policy, &apps);
+            f.assessment = rules.classify_indexed(f, &policy, &apps);
             if !f.complete
                 || f.has_blocked_children
                 || cleaner_platform::normalize(&f.path) == cleaner_platform::normalize(&scan.root)
@@ -254,7 +272,7 @@ pub async fn application_units(
         let key = format!(
             "{}:{}",
             scan_id,
-            serde_json::to_string(&state.store.settings().map_err(error)?).map_err(error)?
+            crate::state::classification_key(&state.store.settings().map_err(error)?)?
         );
         let mut snapshot = state.units_snapshot.lock().unwrap();
         if snapshot.as_ref().is_none_or(|(old, _)| old != &key) {
@@ -305,11 +323,12 @@ pub async fn entry_detail(
         let mut f = state.store.entry(&scan_id, entry_id).map_err(error)?;
         let settings = state.store.settings().map_err(error)?;
         let rules = RuleSet::load(settings.community_enabled).map_err(error)?;
-        f.assessment = rules.classify(
-            &f,
-            &SafetyPolicy::new(settings),
+        let policy = SafetyPolicy::new(settings);
+        let apps = cleaner_engine::application_index::ApplicationIndex::new(
             &state.store.apps(&scan_id).map_err(error)?,
+            &policy,
         );
+        f.assessment = rules.classify_indexed(&f, &policy, &apps);
         if !f.complete || f.has_blocked_children {
             f.assessment.risk = "protected".into();
             f.assessment.protected_reason = Some("目标不完整或包含受保护后代".into());
@@ -357,78 +376,6 @@ pub async fn groups(
 ) -> Result<Vec<Group>, String> {
     let state = state.inner().clone();
     crate::background::read(move || state.store.groups(&scan_id, &kind).map_err(error)).await
-}
-#[tauri::command]
-pub fn save_settings(
-    state: State<'_, Shared>,
-    mut settings: Settings,
-    key: Option<String>,
-) -> Result<Settings, String> {
-    if state.cleaning.load(Ordering::SeqCst) {
-        return Err("回收执行期间不能更改安全设置".into());
-    }
-    let previous = state.store.settings().map_err(error)?;
-    if !settings.llm.base_url.is_empty() {
-        cleaner_llm::client::endpoint(&settings.llm.base_url).map_err(error)?;
-    }
-    settings.llm.max_requests = settings.llm.max_requests.clamp(1, 100);
-    settings.llm.concurrency = settings.llm.concurrency.clamp(1, 2);
-    settings.llm.timeout_seconds = settings.llm.timeout_seconds.clamp(5, 300);
-    settings.llm.minimum_bytes = settings.llm.minimum_bytes.max(1048576);
-    if previous.llm.base_url != settings.llm.base_url {
-        credentials::clear().map_err(error)?;
-        settings.llm.metadata_consent = false;
-    }
-    if !settings.llm.enabled || previous.llm.base_url != settings.llm.base_url {
-        for budget in state.budgets.lock().unwrap().values() {
-            budget.cancel.store(true, Ordering::SeqCst);
-        }
-        state.context_previews.lock().unwrap().clear();
-        state.sample_previews.lock().unwrap().clear();
-    }
-    if let Some(key) = key {
-        credentials::save(&key).map_err(error)?;
-    }
-    state.store.put("settings", &settings).map_err(error)?;
-    Ok(settings)
-}
-#[tauri::command]
-pub fn set_annotation(
-    state: State<'_, Shared>,
-    scan_id: String,
-    entry_id: i64,
-    kind: String,
-    value: String,
-) -> Result<(), String> {
-    if state.cleaning.load(Ordering::SeqCst) {
-        return Err("回收执行期间不能更改安全设置".into());
-    }
-    let f = state.store.entry(&scan_id, entry_id).map_err(error)?;
-    let mut settings = state.store.settings().map_err(error)?;
-    match kind.as_str() {
-        "protect" => settings.protected_paths.push(f.path.clone()),
-        "ignore" => settings.ignored_paths.push(f.path.clone()),
-        "exclude_llm" => settings.excluded_llm_paths.push(f.path.clone()),
-        "label" => {
-            if value.trim().is_empty() || value.len() > 300 {
-                return Err("标注长度无效".into());
-            }
-            settings.labels.insert(f.path.clone(), value);
-        }
-        _ => return Err("未知标注操作".into()),
-    }
-    state.store.put("settings", &settings).map_err(error)?;
-    let policy = SafetyPolicy::new(settings.clone());
-    let rules = RuleSet::load(settings.community_enabled).map_err(error)?;
-    let apps = state.store.apps(&scan_id).map_err(error)?;
-    for f in state.store.descendants(&scan_id, &f.path).map_err(error)? {
-        state
-            .store
-            .update_assessment(f.id, &rules.classify(&f, &policy, &apps))
-            .map_err(error)?;
-    }
-    state.store.aggregate(&scan_id).map_err(error)?;
-    Ok(())
 }
 #[tauri::command]
 pub async fn rules(state: State<'_, Shared>) -> Result<serde_json::Value, String> {

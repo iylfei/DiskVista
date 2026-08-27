@@ -67,7 +67,7 @@ describe("evidence panel safety", () => {
         onError={noop}
       />,
     );
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>加入待清理/);
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>选择此项/);
     expect(html).toContain("Protected");
   });
 });
@@ -88,9 +88,9 @@ describe("basket selection state", () => {
         />,
       );
     expect(render(false)).toContain('aria-pressed="false"');
-    expect(render(false)).toContain("加入待清理");
+    expect(render(false)).toContain("选择此项");
     expect(render(true)).toContain('aria-pressed="true"');
     expect(render(true)).toContain("取消选择");
-    expect(render(true)).not.toContain("加入待清理");
+    expect(render(true)).not.toContain("选择此项");
   });
 });

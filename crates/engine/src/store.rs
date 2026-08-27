@@ -7,6 +7,8 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+mod retention;
+mod subtrees;
 
 #[derive(Clone)]
 pub struct Store {
@@ -41,7 +43,7 @@ impl Store {
         let s = Self {
             path: path.as_ref().to_owned(),
         };
-        s.connection()?.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
+        s.connection()?.execute_batch("PRAGMA journal_mode=WAL;
           CREATE TABLE IF NOT EXISTS scans(id TEXT PRIMARY KEY, root TEXT NOT NULL, started INTEGER NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS entries(id INTEGER PRIMARY KEY, scan_id TEXT NOT NULL,path_key TEXT NOT NULL,parent_key TEXT NOT NULL,is_dir INTEGER NOT NULL,identity TEXT,logical INTEGER NOT NULL,allocated INTEGER,file_count INTEGER NOT NULL,complete INTEGER NOT NULL,blocked INTEGER NOT NULL,latest_change INTEGER NOT NULL,enumerated INTEGER NOT NULL,issue TEXT,risk TEXT NOT NULL,owner TEXT,rule_id TEXT,data TEXT NOT NULL,assessment TEXT NOT NULL,UNIQUE(scan_id,path_key));
           CREATE INDEX IF NOT EXISTS entries_parent ON entries(scan_id,parent_key);
@@ -49,8 +51,12 @@ impl Store {
           CREATE INDEX IF NOT EXISTS entries_size ON entries(scan_id,logical DESC);
           CREATE INDEX IF NOT EXISTS entries_identity ON entries(scan_id,identity);
           CREATE INDEX IF NOT EXISTS entries_cursor ON entries(scan_id,id);
+          CREATE INDEX IF NOT EXISTS entries_rule_candidates ON entries(scan_id,id) WHERE rule_id IS NOT NULL;
+          CREATE INDEX IF NOT EXISTS entries_large_candidates ON entries(scan_id,logical) WHERE is_dir=0 AND rule_id IS NULL AND logical>=104857600;
           CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY,data TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS apps(scan_id TEXT NOT NULL,data TEXT NOT NULL);
+          CREATE INDEX IF NOT EXISTS apps_scan ON apps(scan_id);
+          CREATE INDEX IF NOT EXISTS scans_started ON scans(started DESC);
           CREATE TABLE IF NOT EXISTS analyses(id TEXT PRIMARY KEY,scan_id TEXT NOT NULL,entry_id INTEGER NOT NULL,created INTEGER NOT NULL,data TEXT NOT NULL);
           CREATE INDEX IF NOT EXISTS analyses_entry ON analyses(scan_id,entry_id,created DESC);
           CREATE TABLE IF NOT EXISTS history(id TEXT PRIMARY KEY,time INTEGER NOT NULL,data TEXT NOT NULL);")?;
@@ -59,10 +65,16 @@ impl Store {
     pub fn connection(&self) -> Result<Connection> {
         let c = Connection::open(&self.path)?;
         c.busy_timeout(Duration::from_secs(15))?;
+        c.pragma_update(None, "synchronous", "NORMAL")?;
+        Ok(c)
+    }
+    fn durable_connection(&self) -> Result<Connection> {
+        let c = self.connection()?;
+        c.pragma_update(None, "synchronous", "FULL")?;
         Ok(c)
     }
     pub fn put<T: Serialize>(&self, key: &str, value: &T) -> Result<()> {
-        self.connection()?.execute(
+        self.durable_connection()?.execute(
             "INSERT OR REPLACE INTO kv VALUES(?1,?2)",
             params![key, serde_json::to_string(value)?],
         )?;
@@ -77,7 +89,7 @@ impl Store {
     }
     /// Persist reservations monotonically even when concurrent requests finish out of order.
     pub fn put_counter_max(&self, key: &str, value: u32) -> Result<()> {
-        self.connection()?.execute(
+        self.durable_connection()?.execute(
             "INSERT INTO kv(key,data) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET data=CAST(MAX(CAST(kv.data AS INTEGER),CAST(excluded.data AS INTEGER)) AS TEXT)",
             params![key, value.to_string()],
         )?;
@@ -397,7 +409,7 @@ impl Store {
         Ok(result)
     }
     pub fn add_history(&self, h: &HistoryItem) -> Result<()> {
-        self.connection()?.execute(
+        self.durable_connection()?.execute(
             "INSERT INTO history VALUES(?1,?2,?3)",
             params![h.id, h.time, serde_json::to_string(h)?],
         )?;
@@ -435,7 +447,15 @@ impl Store {
         result
     }
     pub fn recover_interrupted(&self) -> Result<()> {
-        for mut s in self.scans()? {
+        let c = self.connection()?;
+        let mut statement = c.prepare(
+            "SELECT data FROM scans WHERE status IN ('scanning','aggregating','queued')",
+        )?;
+        let scans = statement
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for json in scans {
+            let mut s: Scan = serde_json::from_str(&json)?;
             if ["scanning", "aggregating", "queued"].contains(&s.status.as_str()) {
                 s.status = "interrupted".into();
                 s.finished = Some(chrono::Utc::now().timestamp());
@@ -457,6 +477,35 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn connection_durability_does_not_leak_between_index_and_authoritative_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("index.db")).unwrap();
+        let mode = |c: Connection| {
+            c.pragma_query_value(None, "synchronous", |r| r.get::<_, i64>(0))
+                .unwrap()
+        };
+        assert_eq!(mode(store.connection().unwrap()), 1);
+        assert_eq!(mode(store.durable_connection().unwrap()), 2);
+        store
+            .put(
+                "settings",
+                &Settings {
+                    scan_retention: 5,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(mode(store.connection().unwrap()), 1);
+        assert_eq!(
+            Store::open(&store.path)
+                .unwrap()
+                .settings()
+                .unwrap()
+                .scan_retention,
+            5
+        );
+    }
     #[test]
     fn issue_filter_returns_only_recorded_failures_before_pagination() {
         let temp = tempfile::tempdir().unwrap();

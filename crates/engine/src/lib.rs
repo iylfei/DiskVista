@@ -1,3 +1,5 @@
+pub mod annotations;
+pub mod application_index;
 pub mod cleanup;
 pub mod context;
 pub mod directory_knowledge;

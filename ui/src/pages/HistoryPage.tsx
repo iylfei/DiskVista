@@ -1,8 +1,6 @@
 import { useEffect, useState } from "react";
 import type { HistoryItem } from "../lib/types";
 import { api, bytes, statusText } from "../lib/api";
-import HelpTip from "../components/HelpTip";
-import { helpText } from "../lib/helpText";
 import CleanupResult from "../components/CleanupResult";
 export default function HistoryPage({
   onError,
@@ -31,15 +29,7 @@ export default function HistoryPage({
           打开 Windows 回收站
         </button>
       </div>
-      <div className="notice">
-        需要恢复？在 Windows
-        回收站中找到原文件，选择“还原”。本程序不会自动清空回收站。
-      </div>
-      <p className="footnote">
-        可用空间变化
-        <HelpTip label="可用空间变化" text={helpText.freeSpaceChange} />
-        不一定等于本次清理释放的空间。
-      </p>
+      <div className="notice">可在 Windows 回收站中选择“还原”恢复文件。</div>
       {items.length === 0 ? (
         <div className="empty">
           <p>尚未执行清理操作</p>
@@ -51,11 +41,9 @@ export default function HistoryPage({
               <strong className="path-text">{h.path}</strong>
               <small>
                 {new Date(h.time * 1000).toLocaleString("zh-CN")} · 文件占用约{" "}
-                {bytes(h.bytes)} · 可用空间变化{" "}
-                {h.freeSpaceDelta >= 0 ? "+" : "−"}
-                {bytes(Math.abs(h.freeSpaceDelta))}
+                {bytes(h.bytes)}
               </small>
-              <p>{h.message}</p>
+              {h.status !== "recycled" && <p>{h.message}</p>}
             </div>
             <span
               className={`badge ${h.status === "recycled" ? "low" : "review"}`}

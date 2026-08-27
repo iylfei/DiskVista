@@ -70,7 +70,7 @@ pub fn preview(store: &Store, scan_id: &str, ids: &[i64]) -> Result<CleanupPrevi
     }
     let policy = SafetyPolicy::new(store.settings()?);
     let rules = crate::rules::RuleSet::load(policy.settings.community_enabled)?;
-    let apps = store.apps(scan_id)?;
+    let apps = crate::application_index::ApplicationIndex::new(&store.apps(scan_id)?, &policy);
     let scan = store.scan(scan_id)?;
     let mut selected = Vec::new();
     for id in ids {
@@ -90,7 +90,7 @@ pub fn preview(store: &Store, scan_id: &str, ids: &[i64]) -> Result<CleanupPrevi
         }
         let reason = policy
             .reason(&file)
-            .or_else(|| policy.installed_reason(&file, &apps))
+            .or_else(|| apps.installed_reason(&file))
             .or_else(|| {
                 if !file.complete || file.has_blocked_children {
                     Some("目标或其后代扫描不完整/受保护".into())
@@ -120,11 +120,10 @@ pub fn preview(store: &Store, scan_id: &str, ids: &[i64]) -> Result<CleanupPrevi
             items.push(blocked(&file, "扫描后目标发生变化，请刷新后重新选择"));
             continue;
         }
-        if let Some(reason) = live.iter().find_map(|f| {
-            policy
-                .reason(f)
-                .or_else(|| policy.installed_reason(f, &apps))
-        }) {
+        if let Some(reason) = live
+            .iter()
+            .find_map(|f| policy.reason(f).or_else(|| apps.installed_reason(f)))
+        {
             items.push(blocked(&file, &format!("当前目标包含受保护内容：{reason}")));
             continue;
         }
@@ -141,7 +140,7 @@ pub fn preview(store: &Store, scan_id: &str, ids: &[i64]) -> Result<CleanupPrevi
             .map(|f| f.allocated_bytes.unwrap_or(f.logical_bytes))
             .sum();
         accepted.push(file.path.clone());
-        let risk = rules.classify(&file, &policy, &apps).risk;
+        let risk = rules.classify_indexed(&file, &policy, &apps).risk;
         items.push(CleanupItem {
             entry_id: file.id,
             path: file.path,
@@ -202,7 +201,8 @@ pub fn execute(
     {
         bail!("预览后设置或保护规则发生变化，请重新生成预览");
     }
-    let apps = inventory::installed_apps();
+    let apps =
+        crate::application_index::ApplicationIndex::new(&inventory::installed_apps(), &policy);
     let batch = uuid::Uuid::new_v4().to_string();
     let mut history = Vec::new();
     let mut aborted = false;
@@ -235,11 +235,10 @@ pub fn execute(
             if fingerprint(&live) != item.fingerprint {
                 bail!("目标身份、大小、时间或目录内容已变化");
             }
-            if let Some(reason) = live.iter().find_map(|f| {
-                policy
-                    .reason(f)
-                    .or_else(|| policy.installed_reason(f, &apps))
-            }) {
+            if let Some(reason) = live
+                .iter()
+                .find_map(|f| policy.reason(f).or_else(|| apps.installed_reason(f)))
+            {
                 bail!("保护策略阻止：{reason}");
             }
             ensure_not_in_use(&live)?;
@@ -260,11 +259,10 @@ pub fn execute(
                     if fingerprint(&live) != fp {
                         bail!("回收开始前目标再次变化");
                     }
-                    if let Some(reason) = live.iter().find_map(|f| {
-                        policy
-                            .reason(f)
-                            .or_else(|| policy.installed_reason(f, &apps))
-                    }) {
+                    if let Some(reason) = live
+                        .iter()
+                        .find_map(|f| policy.reason(f).or_else(|| apps.installed_reason(f)))
+                    {
                         bail!("回收开始前保护策略阻止：{reason}");
                     }
                     ensure_not_in_use(&live)?;

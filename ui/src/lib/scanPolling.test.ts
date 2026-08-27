@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "./api";
 import { sameSnapshot, startScanPolling } from "./scanPolling";
+import { startAnalysisPolling } from "./analysisPolling";
 import type { RuntimeStatus } from "./types";
 
 vi.mock("./api", () => ({ api: vi.fn() }));
@@ -37,6 +38,74 @@ beforeEach(() => {
 afterEach(() => {
   vi.clearAllTimers();
   vi.useRealTimers();
+});
+
+describe("analysis result polling", () => {
+  it("checks idle results once and does not keep polling", async () => {
+    vi.mocked(api).mockResolvedValue([]);
+    const stop = startAnalysisPolling({
+      scanId: "s",
+      entryId: 1,
+      active: false,
+      onResults: vi.fn(),
+      onError: vi.fn(),
+    });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(api).toHaveBeenCalledTimes(1);
+    expect(api).toHaveBeenCalledWith("analysis_results", {
+      scanId: "s",
+      entryId: 1,
+      revalidate: true,
+    });
+    stop();
+  });
+  it("uses lightweight reads during analysis, then revalidates once when it finishes", async () => {
+    vi.mocked(api).mockResolvedValue([]);
+    const options = {
+      scanId: "s",
+      entryId: 1,
+      onResults: vi.fn(),
+      onError: vi.fn(),
+    };
+    const stop = startAnalysisPolling({ ...options, active: true });
+    await vi.advanceTimersByTimeAsync(9000);
+    expect(api).toHaveBeenCalledTimes(4);
+    expect(
+      vi.mocked(api).mock.calls.every(([, args]) => args?.revalidate === false),
+    ).toBe(true);
+    stop();
+    const finish = startAnalysisPolling({ ...options, active: false });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(api).toHaveBeenCalledTimes(5);
+    expect(api).toHaveBeenLastCalledWith("analysis_results", {
+      scanId: "s",
+      entryId: 1,
+      revalidate: true,
+    });
+    finish();
+  });
+  it("does not overlap requests or update a closed detail panel", async () => {
+    let resolve!: (value: unknown[]) => void;
+    vi.mocked(api).mockReturnValue(
+      new Promise((r) => {
+        resolve = r;
+      }),
+    );
+    const onResults = vi.fn();
+    const stop = startAnalysisPolling({
+      scanId: "s",
+      entryId: 1,
+      active: true,
+      onResults,
+      onError: vi.fn(),
+    });
+    await vi.advanceTimersByTimeAsync(9000);
+    expect(api).toHaveBeenCalledTimes(1);
+    stop();
+    resolve([]);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(onResults).not.toHaveBeenCalled();
+  });
 });
 
 describe("scan status polling", () => {

@@ -63,6 +63,8 @@ pub struct AnalysisResult {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalysisProgress {
+    #[serde(default)]
+    pub scan_id: Option<String>,
     pub active: bool,
     pub queued: u32,
     pub finished: u32,

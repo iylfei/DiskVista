@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
+    pub scan_retention: u32,
     pub enhanced_scan: bool,
     pub community_enabled: bool,
     pub protected_paths: Vec<String>,

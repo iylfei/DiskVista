@@ -7,7 +7,7 @@ use std::path::Path;
 
 pub fn fingerprint(files: &[FileRecord]) -> String {
     let mut rows: Vec<_> = files.iter().collect();
-    rows.sort_by_key(|f| normalize(&f.path));
+    rows.sort_by_cached_key(|f| normalize(&f.path));
     let mut hash = Sha256::new();
     for f in rows {
         hash.update(

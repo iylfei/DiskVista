@@ -1,9 +1,8 @@
 export function suggestionEmpty(status: string, risk: string, search: string) {
   if (["queued", "scanning", "aggregating"].includes(status))
     return {
-      title: "正在扫描，完成后会显示清理建议",
-      description:
-        "扫描只查看文件信息，不会删除文件。文件较多时需要等待一会儿。",
+      title: "正在扫描",
+      description: "完成后即可查看清理建议。",
       reset: false,
     };
   if (status !== "complete")

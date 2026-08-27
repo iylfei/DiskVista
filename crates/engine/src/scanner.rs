@@ -42,14 +42,15 @@ pub fn run(job: ScanJob, cancel: Arc<AtomicBool>, mut progress: impl FnMut(&Scan
     let rules = RuleSet::load(job.settings.community_enabled)?;
     let apps = inventory::installed_apps();
     store.save_apps(&job.scan_id, &apps)?;
+    let apps = crate::application_index::ApplicationIndex::new(&apps, &policy);
     let mut root = filesystem::inspect(&root_path)?;
-    root.assessment = rules.classify(&root, &policy, &apps);
+    root.assessment = rules.classify_indexed(&root, &policy, &apps);
     root.assessment.risk = "protected".into();
     root.assessment.protected_reason = Some("扫描根目录不作为整体清理目标，请逐层选择".into());
     root.complete = !root.is_dir;
     let mut scan = store.scan(&job.scan_id)?;
     scan.status = "scanning".into();
-    scan.message = "正在读取文件系统元数据，不读取普通文件内容".into();
+    scan.message = "正在读取文件信息".into();
     let checkpoint = job
         .journal_probe
         .as_ref()
@@ -160,7 +161,7 @@ pub fn run(job: ScanJob, cancel: Arc<AtomicBool>, mut progress: impl FnMut(&Scan
                                     }
                                 }
                             }
-                            f.assessment = rules.classify(&f, &policy, &apps);
+                            f.assessment = rules.classify_indexed(&f, &policy, &apps);
                             if f.is_dir {
                                 scan.directories += 1;
                             } else {
@@ -248,7 +249,7 @@ pub fn run(job: ScanJob, cancel: Arc<AtomicBool>, mut progress: impl FnMut(&Scan
             if normalize(&f.path) == normalize(&job.root) {
                 continue;
             }
-            let mut a = rules.classify(&f, &policy, &apps);
+            let mut a = rules.classify_indexed(&f, &policy, &apps);
             if !f.complete || f.has_blocked_children {
                 a.risk = "protected".into();
                 a.protected_reason = Some(
