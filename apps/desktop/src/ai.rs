@@ -1,7 +1,6 @@
 use crate::state::{error, ContextPreview, SamplePreview, Shared};
 use cleaner_domain::*;
 use cleaner_engine::{
-    cleanup::live_tree,
     context::{self, Sample},
     rules::RuleSet,
 };
@@ -30,17 +29,12 @@ pub(crate) fn budget(state: &Shared, scan: &str, max: u32) -> Budget {
     entry.maximum = max;
     entry.clone()
 }
-pub(crate) fn checked_context(
+pub(crate) fn snapshot_context(
     state: &Shared,
     scan: &str,
     id: i64,
 ) -> Result<AnalysisContext, String> {
-    let context = context::build(&state.store, scan, id).map_err(error)?;
-    let f = state.store.entry(scan, id).map_err(error)?;
-    if context::fingerprint(&live_tree(&f.path).map_err(error)?) != context.fingerprint {
-        return Err("扫描后文件已变化，请重新扫描以获得新的分析输入".into());
-    }
-    Ok(context)
+    context::build(&state.store, scan, id).map_err(error)
 }
 #[tauri::command]
 pub async fn llm_context(
@@ -53,7 +47,7 @@ pub async fn llm_context(
         if !state.store.settings().map_err(error)?.llm.enabled {
             return Err("AI 未启用".into());
         }
-        let context = checked_context(&state, &scan_id, entry_id)?;
+        let context = snapshot_context(&state, &scan_id, entry_id)?;
         let id = uuid::Uuid::new_v4().to_string();
         let mut previews = state.context_previews.lock().unwrap();
         previews.retain(|_, p| now() - p.created < 600);
@@ -123,6 +117,33 @@ pub(crate) fn run_one(
     samples: Vec<Sample>,
     b: &Budget,
 ) -> Result<AnalysisOutcome, String> {
+    run_one_with(
+        state,
+        context,
+        samples,
+        b,
+        |settings, context, samples, budget| {
+            let key = credentials::load()?;
+            client::analyze(settings, key.as_deref(), context, &json!(samples), budget)
+        },
+    )
+}
+
+fn run_one_with(
+    state: &Shared,
+    context: AnalysisContext,
+    samples: Vec<Sample>,
+    b: &Budget,
+    send: impl FnOnce(
+        &LlmSettings,
+        &AnalysisContext,
+        &[Sample],
+        &Budget,
+    ) -> anyhow::Result<client::Reply>,
+) -> Result<AnalysisOutcome, String> {
+    if b.cancel.load(Ordering::Relaxed) {
+        return Err("分析已取消".into());
+    }
     let settings = state.store.settings().map_err(error)?;
     if !settings.llm.enabled {
         return Err("AI 已关闭".into());
@@ -147,12 +168,16 @@ pub(crate) fn run_one(
         progress.requests = b.requests.load(Ordering::Relaxed);
         return Ok(AnalysisOutcome::Cached);
     }
-    let fresh = checked_context(state, &context.scan_id, context.entry_id)?;
+    let fresh = snapshot_context(state, &context.scan_id, context.entry_id)?;
     if context.fingerprint != fresh.fingerprint {
         return Err("分析输入已变化，请重新预览".into());
     }
-    let key = credentials::load().map_err(error)?;
-    let reply = client::analyze(&settings.llm, key.as_deref(), &context, &json!(samples), b);
+    context::validate_samples(&state.store, &fresh, &samples).map_err(error)?;
+    if b.cancel.load(Ordering::Relaxed) {
+        return Err("分析已取消".into());
+    }
+    state.progress.lock().unwrap().message = "正在等待 AI 返回…".into();
+    let reply = send(&settings.llm, &context, &samples, b);
     let mut result = AnalysisResult {
         id: uuid::Uuid::new_v4().to_string(),
         scan_id: context.scan_id.clone(),
@@ -173,9 +198,12 @@ pub(crate) fn run_one(
             result.assessment = Some(reply.assessment);
             result.prompt_tokens = reply.prompt_tokens;
             result.completion_tokens = reply.completion_tokens;
-            if checked_context(state, &context.scan_id, context.entry_id).is_err() {
+            if !snapshot_context(state, &context.scan_id, context.entry_id)
+                .is_ok_and(|fresh| fresh.fingerprint == context.fingerprint)
+                || context::validate_samples(&state.store, &context, &samples).is_err()
+            {
                 result.status = "stale".into();
-                result.message = "分析期间目标变化，结论已过期".into();
+                result.message = "分析期间扫描记录、授权范围或文本样本变化，结论已过期".into();
             }
         }
         Err(e) => result.message = error(e),
@@ -305,4 +333,96 @@ pub async fn test_connection(
     })
     .await
     .map_err(error)?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cleaner_engine::store::Store;
+
+    #[test]
+    fn metadata_analysis_uses_the_finished_snapshot_without_reopening_the_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path().join("index.sqlite")).unwrap();
+        let path = temp.path().join("removed-source");
+        assert!(!path.exists());
+        let file = FileRecord {
+            path: path.to_string_lossy().into_owned(),
+            name: "removed-source".into(),
+            is_dir: true,
+            complete: true,
+            file_count: 150_000,
+            logical_bytes: 10_000_000_000,
+            ..Default::default()
+        };
+        store
+            .save_scan(&Scan {
+                id: "s".into(),
+                status: "complete".into(),
+                root: temp.path().to_string_lossy().into_owned(),
+                ..Default::default()
+            })
+            .unwrap();
+        Store::insert_batch(
+            &mut store.connection().unwrap(),
+            "s",
+            std::slice::from_ref(&file),
+        )
+        .unwrap();
+        let file = store.by_path("s", &file.path).unwrap();
+        let mut settings = Settings::default();
+        settings.llm.enabled = true;
+        store.put("settings", &settings).unwrap();
+        let state = crate::state::AppState::new(store);
+        let context = snapshot_context(&state, "s", file.id).unwrap();
+        assert_eq!(context.file_count, 150_000);
+        assert_eq!(context.logical_bytes, 10_000_000_000);
+        assert!(context.note.contains("扫描记录"));
+        let budget = budget(&state, "s", 10);
+        let outcome = run_one_with(
+            &state,
+            context.clone(),
+            vec![],
+            &budget,
+            |_, _, samples, b| {
+                assert!(samples.is_empty());
+                b.reserve()?;
+                Ok(client::Reply {
+                    assessment: ModelAssessment {
+                        purpose: "测试目录".into(),
+                        source: "未知".into(),
+                        consequences: "需要复核".into(),
+                        recovery: "无法确认".into(),
+                        recommendation: "人工确认".into(),
+                        confidence: "low".into(),
+                        uncertainties: vec![],
+                        evidence: vec!["summary".into()],
+                        questions: vec![],
+                    },
+                    prompt_tokens: Some(1),
+                    completion_tokens: Some(1),
+                })
+            },
+        )
+        .unwrap();
+        assert!(matches!(outcome, AnalysisOutcome::Completed));
+        assert_eq!(state.progress.lock().unwrap().finished, 1);
+        assert_eq!(state.store.get::<u32>("llm-budget:s").unwrap(), Some(1));
+        assert_eq!(
+            state.store.analyses("s", file.id).unwrap()[0].status,
+            "success"
+        );
+        assert!(matches!(
+            run_one_with(&state, context.clone(), vec![], &budget, |_, _, _, _| {
+                panic!("cached analysis must not send another request")
+            })
+            .unwrap(),
+            AnalysisOutcome::Cached
+        ));
+        budget.cancel.store(true, Ordering::SeqCst);
+        assert!(
+            matches!(run_one(&state, context, vec![], &budget), Err(message) if message.contains("取消"))
+        );
+        assert_eq!(budget.requests.load(Ordering::SeqCst), 1);
+    }
 }

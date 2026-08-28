@@ -24,7 +24,7 @@ fn reconcile(
                     .is_some_and(|fp| fp.as_ref() != Some(&result.fingerprint)))
         {
             result.status = "stale".into();
-            result.message = "目标、规则或模型配置变化，结果已过期".into();
+            result.message = "扫描记录、授权范围、规则或模型配置变化，结果已过期".into();
             changed.push(i);
         }
     }
@@ -46,7 +46,7 @@ pub async fn analysis_results(
             let rules = RuleSet::load(settings.community_enabled).map_err(error)?;
             let config = client::config_hash(&settings.llm, &rules.version);
             let changed = reconcile(&mut results, &config, revalidate.unwrap_or(true), || {
-                crate::ai::checked_context(&state, &scan_id, entry_id)
+                crate::ai::snapshot_context(&state, &scan_id, entry_id)
                     .ok()
                     .map(|c| c.fingerprint)
             });

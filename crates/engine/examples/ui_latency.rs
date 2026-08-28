@@ -21,6 +21,41 @@ fn main() -> anyhow::Result<()> {
         "existing database required"
     );
     let store = Store { path: path.into() };
+    if std::env::args().nth(2).as_deref() == Some("--analysis") {
+        let scans = timed("scan summaries", || store.scans())?;
+        let scan = scans
+            .iter()
+            .find(|scan| scan.status == "complete")
+            .ok_or_else(|| anyhow::anyhow!("no finished scan"))?;
+        println!("snapshot: {} files", scan.files);
+        let settings = timed("analysis settings", || store.settings())?;
+        timed("analysis safety policy", || {
+            SafetyPolicy::new(settings.clone())
+        });
+        timed("analysis app snapshot", || store.apps(&scan.id))?;
+        let candidates = timed("analysis candidates", || {
+            store.query(&EntryQuery {
+                scan_id: scan.id.clone(),
+                uncertain_only: true,
+                minimum_bytes: settings.llm.minimum_bytes,
+                limit: 5,
+                ..Default::default()
+            })
+        })?;
+        for (index, file) in candidates.items.iter().enumerate() {
+            match timed(&format!("snapshot context {}", index + 1), || {
+                cleaner_engine::context::build(&store, &scan.id, file.id)
+            }) {
+                Ok(context) => println!(
+                    "metadata rows: {}, truncated: {}",
+                    context.files.len(),
+                    context.truncated
+                ),
+                Err(_) => println!("candidate excluded by safety policy"),
+            }
+        }
+        return Ok(());
+    }
     for pass in 1..=3 {
         println!("pass {pass}");
         let volumes = timed("volume enumeration", filesystem::volumes);

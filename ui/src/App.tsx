@@ -390,6 +390,9 @@ export default function App() {
                 {analysis.active
                   ? `AI 分析：已处理 ${analysis.finished}/${analysis.queued} 项，请求 ${analysis.requests}/${analysis.maxRequests}`
                   : analysis.message}
+                {analysis.active && analysis.message && (
+                  <small>{analysis.message}</small>
+                )}
                 {!analysis.active && analysis.finished > 0 && (
                   <small>分析结果可在对应文件详情的“AI 辅助解释”中查看。</small>
                 )}

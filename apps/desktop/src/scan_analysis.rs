@@ -112,7 +112,7 @@ fn start(state: Shared, scan_id: &str, trigger: Trigger) -> Result<AnalysisProgr
         message: if candidates.is_empty() {
             "没有符合当前门槛的待分析项目。".into()
         } else {
-            "正在分析扫描结果…".into()
+            "正在读取扫描记录…".into()
         },
     };
     *state.progress.lock().unwrap() = progress.clone();
@@ -172,7 +172,8 @@ fn run_batch(
                 let Some(file) = queue.lock().unwrap().pop_front() else {
                     break;
                 };
-                let result = ai::checked_context(state, scan_id, file.id)
+                state.progress.lock().unwrap().message = "正在读取扫描记录…".into();
+                let result = ai::snapshot_context(state, scan_id, file.id)
                     .and_then(|context| ai::run_one(state, context, vec![], budget));
                 let mut outcomes = outcomes.lock().unwrap();
                 match result {

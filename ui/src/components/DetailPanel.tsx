@@ -271,6 +271,7 @@ export default function DetailPanel({
                 {statusText(r.status)}
               </span>
               <small>
+                {r.includedContent ? "扫描记录与授权文本" : "基于扫描记录"} ·{" "}
                 {date(r.created)} ·{" "}
                 {r.promptTokens == null
                   ? "用量未知"
