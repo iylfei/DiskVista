@@ -1,9 +1,24 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import DetailPanel from "./DetailPanel";
 import AnalysisResultCard from "./AnalysisResultCard";
 import FileAnalysisBadge from "./FileAnalysisBadge";
+import EntryTable from "./EntryTable";
 import type { AnalysisResult, AnalysisSummary, FileRecord } from "../lib/types";
+vi.mock("@tanstack/react-virtual", () => ({
+  useVirtualizer: ({ count }: { count: number }) => ({
+    getTotalSize: () => count * 65,
+    getVirtualItems: () =>
+      Array.from({ length: count }, (_, index) => ({
+        index,
+        size: 65,
+        start: index * 65,
+      })),
+  }),
+}));
+vi.mock("../lib/useAnalysisSummaries", () => ({
+  useAnalysisSummaries: () => ({ summaries: new Map(), failed: false }),
+}));
 function file(risk = "review"): FileRecord {
   return {
     id: 1,
@@ -51,6 +66,30 @@ const summary: AnalysisSummary = {
 };
 
 describe("AI evidence and list summaries", () => {
+  it("hides routine review badges in file lists without hiding protection or change dates", () => {
+    const html = renderToStaticMarkup(
+      <EntryTable
+        scanId="s"
+        items={[
+          file(),
+          { ...file("protected"), id: 2 },
+          { ...file("low"), id: 3 },
+        ]}
+        selected={new Set()}
+        onSelect={noop}
+        onDetail={noop}
+        onOpen={noop}
+        total={3}
+        page={0}
+        onPage={noop}
+      />,
+    );
+    expect(html).not.toContain("需要你确认");
+    expect(html).not.toContain('class="badge review"');
+    expect(html).toContain("受保护");
+    expect(html).toContain("较低风险");
+    expect(html).toContain("最近变化");
+  });
   it("only labels a valid history match as similar", () => {
     const render = (result?: AnalysisSummary) =>
       renderToStaticMarkup(<FileAnalysisBadge result={result} onOpen={noop} />);

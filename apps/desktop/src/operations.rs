@@ -75,13 +75,17 @@ pub async fn history_page(
     .await
 }
 #[tauri::command]
-pub fn open_location(
+pub async fn open_location(
     state: State<'_, Shared>,
     scan_id: String,
     entry_id: i64,
 ) -> Result<(), String> {
-    let f = state.store.entry(&scan_id, entry_id).map_err(error)?;
-    cleaner_platform::shell::reveal(&f.path).map_err(error)
+    let state = state.inner().clone();
+    crate::background::read(move || {
+        let f = state.store.entry(&scan_id, entry_id).map_err(error)?;
+        cleaner_platform::shell::reveal(&f.path).map_err(error)
+    })
+    .await
 }
 #[tauri::command]
 pub fn open_system(target: String) -> Result<(), String> {

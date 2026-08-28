@@ -141,15 +141,13 @@ export default function EntryTable({
                     )}
                   </div>
                   <div className="file-hints">
-                    {!(
-                      quietReview &&
-                      ["review", "unknown"].includes(f.assessment.risk)
-                    ) && (
-                      <span className={`badge ${f.assessment.risk}`}>
-                        {protectedItem && <ShieldCheck size={12} />}{" "}
-                        {riskText(f.assessment.risk)}
-                      </span>
-                    )}
+                    {f.assessment.risk !== "review" &&
+                      !(quietReview && f.assessment.risk === "unknown") && (
+                        <span className={`badge ${f.assessment.risk}`}>
+                          {protectedItem && <ShieldCheck size={12} />}{" "}
+                          {riskText(f.assessment.risk)}
+                        </span>
+                      )}
                     <FileAnalysisBadge
                       result={summaries.get(f.id)}
                       onOpen={() => onDetail(f)}
