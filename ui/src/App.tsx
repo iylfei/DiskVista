@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   HardDrive,
   LayoutDashboard,
@@ -26,6 +32,7 @@ import type {
 } from "./lib/types";
 import ApplicationUnits from "./components/ApplicationUnits";
 import EntryTable from "./components/EntryTable";
+import AnalysisFilter from "./components/AnalysisFilter";
 import SpaceMap from "./components/SpaceMap";
 import PathBreadcrumb from "./components/PathBreadcrumb";
 import ScanSummary from "./components/ScanSummary";
@@ -44,6 +51,7 @@ import RulesPage from "./pages/RulesPage";
 import TitleBar from "./components/TitleBar";
 import { version as appVersion } from "../../package.json";
 import { sameSnapshot, startScanPolling } from "./lib/scanPolling";
+import { mergeFileDetail } from "./lib/fileDetail";
 
 const navigation = [
   ["overview", "总览", LayoutDashboard],
@@ -61,16 +69,19 @@ export default function App() {
   const [error, setError] = useState("");
   const [page, setPage] = useState<Page>("overview");
   const pageRef = useRef<Page>(page);
-  useEffect(() => {
-    pageRef.current = page;
-  }, [page]);
   const [scan, setScan] = useState<Scan | null>(null);
+  const scanIdRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    pageRef.current = page;
+    scanIdRef.current = scan?.id ?? null;
+  }, [page, scan?.id]);
   const [parent, setParent] = useState("");
   const [items, setItems] = useState<FileRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [index, setIndex] = useState(0);
   const [search, setSearch] = useState("");
   const [risk, setRisk] = useState("");
+  const [analysisStatus, setAnalysisStatus] = useState("");
   const [sort, setSort] = useState("size");
   const [showMapFiles, setShowMapFiles] = useState(false);
   const main = useRef<HTMLElement>(null);
@@ -79,8 +90,20 @@ export default function App() {
   const [revision, setRevision] = useState(0);
   const [recentResult, setRecentResult] = useState<HistoryItem[]>([]);
   const [busy, setBusy] = useState(false);
-  const [cleaning, setCleaning] = useState(false);
+  const [cleaning, setCleaningState] = useState(false);
+  const cleaningRef = useRef(false);
+  const setCleaning = useCallback((value: boolean) => {
+    cleaningRef.current = value;
+    setCleaningState(value);
+  }, []);
   const [dismissedAnalysis, setDismissedAnalysis] = useState("");
+  const analysis = boot?.analysisProgress;
+  const analysisRevision = `${revision}:${
+    analysis?.scanId === scan?.id
+      ? `${analysis?.finished ?? 0}:${analysis?.active ?? false}`
+      : "idle"
+  }`;
+  const filteredAnalysisRevision = analysisStatus ? analysisRevision : "";
   useEffect(() => {
     if (boot?.analysisProgress.active) setDismissedAnalysis("");
   }, [boot?.analysisProgress.active]);
@@ -95,11 +118,14 @@ export default function App() {
   const {
     basket,
     pending,
+    adding,
     message: selectionMessage,
     select,
     selectMany,
     addToBasket,
+    addEntryToBasket,
     removeFromBasket,
+    removeRecycled,
     clearBasket,
     reset: resetSelection,
   } = useCleanupSelection(fail);
@@ -178,6 +204,7 @@ export default function App() {
           parent: page === "map" ? parent : null,
           search: search || null,
           risk: risk || null,
+          analysisStatus,
           suggestions: false,
           minimumBytes: 0,
           offset: index * 100,
@@ -186,6 +213,9 @@ export default function App() {
         };
         const r = await api<EntryPage>("query_entries", { query: q });
         if (live) {
+          setIndex((previous) =>
+            Math.min(previous, Math.max(0, Math.ceil(r.total / 100) - 1)),
+          );
           setItems(r.items);
           setTotal(r.total);
         }
@@ -207,14 +237,16 @@ export default function App() {
     parent,
     search,
     risk,
+    analysisStatus,
     index,
     sort,
     revision,
+    filteredAnalysisRevision,
     fail,
   ]);
   useEffect(() => {
     setIndex(0);
-  }, [page, parent, search, risk]);
+  }, [scan?.id, page, parent, search, risk, analysisStatus, sort]);
   async function start(root: string) {
     if (cleaning) return;
     if (scanning) {
@@ -230,6 +262,7 @@ export default function App() {
       setPage("suggestions");
       setSearch("");
       setRisk("");
+      setAnalysisStatus("");
       setItems([]);
       setShowMapFiles(false);
       refresh();
@@ -247,14 +280,14 @@ export default function App() {
     }
   }
   async function showDetail(f: FileRecord) {
-    if (!scan) return;
+    if (!scan || scanIdRef.current !== scan.id) return;
+    const target = { scanId: scan.id, entryId: f.id };
     setDetail(f);
     try {
-      const full = await api<FileRecord>("entry_detail", {
-        scanId: scan.id,
-        entryId: f.id,
-      });
-      setDetail((current) => (current?.id === f.id ? full : current));
+      const full = await api<FileRecord>("entry_detail", target);
+      setDetail((current) =>
+        mergeFileDetail(current, scanIdRef.current, target, full),
+      );
     } catch (e) {
       fail(e);
     }
@@ -266,16 +299,29 @@ export default function App() {
       setPage("map");
       setSearch("");
       setRisk("");
+      setAnalysisStatus("");
     } else void showDetail(f);
   }
+  function queueEntry(entryId: number) {
+    if (!scan || scan.id !== scanIdRef.current || cleaningRef.current) return;
+    if (scan.status !== "complete") {
+      fail("请先完成扫描，再加入待清理清单");
+      return;
+    }
+    addEntryToBasket(scan.id, entryId);
+  }
   async function changed() {
+    const target =
+      detail && scan ? { scanId: scan.id, entryId: detail.id } : null;
     try {
       const b = await api<Bootstrap>("bootstrap");
       setBoot(b);
-      if (detail && scan)
-        setDetail(
-          await api("entry_detail", { scanId: scan.id, entryId: detail.id }),
+      if (target && scanIdRef.current === target.scanId) {
+        const full = await api<FileRecord>("entry_detail", target);
+        setDetail((current) =>
+          mergeFileDetail(current, scanIdRef.current, target, full),
         );
+      }
     } catch (e) {
       fail(e);
     } finally {
@@ -290,7 +336,6 @@ export default function App() {
   const selected = new Set(pending.keys());
   const queued = new Set(basket.keys());
   const title = navigation.find((n) => n[0] === page)?.[1];
-  const analysis = boot?.analysisProgress;
   const analysisMessageKey = `${analysis?.scanId}:${analysis?.message}`;
   return (
     <div className="app-shell">
@@ -323,6 +368,7 @@ export default function App() {
                 setDetail(null);
                 setSearch("");
                 setRisk("");
+                setAnalysisStatus("");
               }}
             >
               <Icon size={18} />
@@ -438,12 +484,13 @@ export default function App() {
                     <ScanPicker
                       scans={boot.scans}
                       current={scan.id}
-                      disabled={!!scanning}
+                      disabled={!!scanning || cleaning}
                       onSelect={(s) => {
                         setScan(s);
                         setParent(s.root);
                         setSearch("");
                         setRisk("");
+                        setAnalysisStatus("");
                         setShowMapFiles(false);
                         resetSelection();
                         setDetail(null);
@@ -484,6 +531,7 @@ export default function App() {
                               setParent(path);
                               setSearch("");
                               setRisk("");
+                              setAnalysisStatus("");
                               setDetail(null);
                             }}
                           />
@@ -506,8 +554,14 @@ export default function App() {
                           scanId={scan.id}
                           status={scan.status}
                           revision={revision}
-                          onOpen={open}
+                          onOpen={(file) => {
+                            open(file);
+                            if (file.isDir) setShowMapFiles(true);
+                          }}
                           onDetail={setDetail}
+                          onAddToBasket={queueEntry}
+                          queued={queued}
+                          adding={adding}
                           onError={fail}
                         />
                       )}
@@ -516,6 +570,7 @@ export default function App() {
                           key={scan.id}
                           scan={scan}
                           revision={revision}
+                          analysisRevision={analysisRevision}
                           selected={selected}
                           queued={queued}
                           onSelect={select}
@@ -540,7 +595,7 @@ export default function App() {
                               </button>
                             </div>
                           )}
-                          <div className="list-toolbar">
+                          <div className="list-toolbar file-filters">
                             <div className="search-box">
                               <Search size={16} />
                               <input
@@ -561,14 +616,29 @@ export default function App() {
                               <option value="unknown">未识别用途</option>
                               <option value="protected">仅看受保护项</option>
                             </select>
+                            <AnalysisFilter
+                              value={analysisStatus}
+                              onChange={(value) => {
+                                setAnalysisStatus(value);
+                                setIndex(0);
+                              }}
+                            />
                             <select
                               aria-label="排序"
                               value={sort}
-                              onChange={(e) => setSort(e.target.value)}
+                              onChange={(e) => {
+                                setSort(e.target.value);
+                                setIndex(0);
+                              }}
                             >
                               <option value="size">按大小</option>
                               <option value="name">按路径</option>
-                              <option value="activity">按最近变化</option>
+                              <option value="activity_desc">
+                                最近变化：从新到旧
+                              </option>
+                              <option value="activity_asc">
+                                最近变化：从旧到新
+                              </option>
                             </select>
                             <button
                               onClick={() => scan && start(scan.root)}
@@ -578,12 +648,16 @@ export default function App() {
                             </button>
                           </div>
                           <EntryTable
+                            scanId={scan.id}
+                            analysisRevision={analysisRevision}
                             items={items}
                             selected={selected}
                             queued={queued}
                             onSelect={select}
                             onDetail={showDetail}
                             onOpen={open}
+                            onAddToBasket={(file) => queueEntry(file.id)}
+                            adding={adding}
                             total={total}
                             page={index}
                             onPage={setIndex}
@@ -599,10 +673,11 @@ export default function App() {
                                 : "可以返回上一级，或调整筛选条件。"
                             }
                             onClearFilters={
-                              search || risk
+                              search || risk || analysisStatus
                                 ? () => {
                                     setSearch("");
                                     setRisk("");
+                                    setAnalysisStatus("");
                                   }
                                 : undefined
                             }
@@ -614,6 +689,7 @@ export default function App() {
                 {page === "basket" && (
                   <BasketPage
                     items={[...basket.values()]}
+                    addingCount={adding.size}
                     scanId={scan?.id ?? ""}
                     onRemove={removeFromBasket}
                     onFindFiles={() => setPage("suggestions")}
@@ -621,7 +697,8 @@ export default function App() {
                     onBusyChange={setCleaning}
                     onDone={(result) => {
                       setRecentResult(result);
-                      clearBasket();
+                      removeRecycled(result);
+                      setDetail(null);
                       setPage("history");
                       refresh();
                     }}
@@ -661,6 +738,8 @@ export default function App() {
               queued={queued.has(detail.id)}
               onClose={() => setDetail(null)}
               onSelect={() => select(detail)}
+              onAddToBasket={() => queueEntry(detail.id)}
+              addingToBasket={adding.has(detail.id)}
               onChanged={changed}
               onError={fail}
             />

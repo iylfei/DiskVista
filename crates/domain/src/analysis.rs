@@ -1,6 +1,8 @@
 use super::Evidence;
 use serde::{Deserialize, Serialize};
 
+pub const ANALYSIS_FORMAT_VERSION: u32 = 3;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalysisContext {
@@ -14,6 +16,8 @@ pub struct AnalysisContext {
     pub accessed: i64,
     pub evidence: Vec<Evidence>,
     pub files: Vec<ContextFile>,
+    #[serde(default)]
+    pub history_references: Vec<HistoryReference>,
     pub truncated: bool,
     pub note: String,
 }
@@ -32,21 +36,62 @@ pub struct ContextFile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ModelAssessment {
-    pub purpose: String,
-    pub source: String,
-    pub consequences: String,
-    pub recovery: String,
-    pub recommendation: String,
-    pub confidence: String,
-    pub uncertainties: Vec<String>,
+    pub deletion_advice: DeletionAdvice,
+    pub reason: String,
+    pub history_matches: Vec<HistoryMatch>,
     pub evidence: Vec<String>,
-    pub questions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeletionAdvice {
+    ConsiderDelete,
+    Keep,
+    Review,
+}
+
+impl DeletionAdvice {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ConsiderDelete => "可考虑删除",
+            Self::Keep => "建议保留",
+            Self::Review => "需要核实",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct HistoryMatch {
+    pub history_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryReference {
+    pub id: String,
+    pub path: String,
+    pub bytes: u64,
+    pub recycled_at: i64,
+    pub owner: Option<String>,
+    pub category: Option<String>,
+    pub match_basis: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisEvidence {
+    pub id: String,
+    pub source: String,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalysisResult {
     pub id: String,
+    pub format_version: u32,
     pub scan_id: String,
     pub entry_id: i64,
     pub fingerprint: String,
@@ -57,7 +102,30 @@ pub struct AnalysisResult {
     pub assessment: Option<ModelAssessment>,
     pub prompt_tokens: Option<u64>,
     pub completion_tokens: Option<u64>,
+    #[serde(default)]
+    pub request_id: Option<String>,
+    #[serde(default = "single_request_item")]
+    pub request_item_count: u32,
     pub included_content: bool,
+    #[serde(default)]
+    pub evidence_details: Vec<AnalysisEvidence>,
+    #[serde(default)]
+    pub history_references: Vec<HistoryReference>,
+}
+
+fn single_request_item() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisSummary {
+    pub analysis_id: String,
+    pub entry_id: i64,
+    pub created: i64,
+    pub status: String,
+    pub summary: String,
+    pub history_match_count: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

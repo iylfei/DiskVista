@@ -1,0 +1,22 @@
+.icon-button.basket-add-button {
+  color: var(--muted);
+}
+.icon-button.basket-add-button:hover:not(:disabled) {
+  color: var(--blue);
+  border-color: #d5e3ed;
+  background: #f1f7fb;
+}
+.table-with-basket-action {
+  --file-actions-width: 64px;
+}
+.file-row-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 2px;
+}
+.file-row-actions > button {
+  padding: 6px;
+  flex: none;
+}

@@ -1,0 +1,86 @@
+.file-hints {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+.data-row .file-hints > small {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  line-height: 1.3;
+  margin-top: 0;
+}
+.file-analysis-badge {
+  min-width: 0;
+  max-width: 100%;
+  gap: 3px;
+  padding: 2px 4px;
+  border: 1px solid #dfe8f0;
+  border-radius: 4px;
+  background: #f2f6fa;
+  color: #4f708e;
+  font-size: 10px;
+  line-height: 1.3;
+  text-align: left;
+}
+.file-analysis-badge > svg {
+  flex: none;
+}
+.file-analysis-badge > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-analysis-badge.stale {
+  background: #f5f6f7;
+  border-color: #e6e9ec;
+  color: var(--muted);
+}
+.analysis-advice {
+  color: #4f708e;
+  font-weight: 550;
+}
+.ai-section > button + button {
+  margin-inline-start: 8px;
+}
+.ai-section > .analysis-card + button {
+  margin-top: 10px;
+}
+.analysis-reason {
+  margin: 6px 0 12px;
+}
+.analysis-card h4,
+.analysis-card small,
+.analysis-card .evidence strong,
+.analysis-history small {
+  overflow-wrap: anywhere;
+}
+.analysis-history ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.analysis-history li {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.analysis-history li:last-child {
+  border-bottom: 0;
+}
+.analysis-history .path-text {
+  margin: 0 0 4px;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.analysis-history p {
+  line-height: 1.6;
+}
+.summary-load-error {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}

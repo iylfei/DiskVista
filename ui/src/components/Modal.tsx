@@ -1,17 +1,20 @@
 import type { ReactNode } from "react";
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 import { X } from "lucide-react";
 export default function Modal({
   title,
   children,
   onClose,
   wide = false,
+  closeDisabled = false,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   wide?: boolean;
+  closeDisabled?: boolean;
 }) {
+  const titleId = useId();
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     ref.current?.showModal();
@@ -20,18 +23,23 @@ export default function Modal({
   return (
     <dialog
       className={wide ? "modal wide" : "modal"}
+      aria-labelledby={titleId}
       ref={ref}
       onCancel={(e) => {
         e.preventDefault();
-        onClose();
+        if (!closeDisabled) onClose();
       }}
     >
       <header>
-        <h2>{title}</h2>
+        <h2 id={titleId}>{title}</h2>
         <button
+          type="button"
           className="icon-button"
           aria-label="关闭对话框"
-          onClick={onClose}
+          disabled={closeDisabled}
+          onClick={() => {
+            if (!closeDisabled) onClose();
+          }}
         >
           <X size={18} />
         </button>

@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Boxes, FolderOpen, Search } from "lucide-react";
+import { Boxes, FolderOpen, Info, Search } from "lucide-react";
 import { api, bytes } from "../lib/api";
 import type { ApplicationUnitPage, FileRecord } from "../lib/types";
+import { startFileDetailLoad } from "../lib/fileDetail";
+import { unitCleanupBlockReason } from "../lib/cleanupTarget";
 import {
   applicationRows,
   canExpand,
@@ -10,6 +12,7 @@ import {
 } from "../lib/applicationTree";
 import { UnitSummary, ComponentSummary } from "./ApplicationUnitRow";
 import HelpTip from "./HelpTip";
+import AddToBasketButton from "./AddToBasketButton";
 import { helpText } from "../lib/helpText";
 import "./units.css";
 
@@ -21,6 +24,9 @@ export default function ApplicationUnits({
   revision,
   onOpen,
   onDetail,
+  onAddToBasket,
+  queued,
+  adding,
   onError,
 }: {
   scanId: string;
@@ -28,6 +34,9 @@ export default function ApplicationUnits({
   revision: number;
   onOpen: (f: FileRecord) => void;
   onDetail: (f: FileRecord) => void;
+  onAddToBasket: (entryId: number) => void;
+  queued: Set<number>;
+  adding: Set<number>;
   onError: (e: unknown) => void;
 }) {
   const [data, setData] = useState<ApplicationUnitPage | null>(null);
@@ -37,6 +46,11 @@ export default function ApplicationUnits({
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [reload, setReload] = useState(0);
   const scroll = useRef<HTMLDivElement>(null);
+  const cancelInspection = useRef<(() => void) | null>(null);
+  useLayoutEffect(
+    () => () => cancelInspection.current?.(),
+    [scanId, status, search, page, revision, reload],
+  );
   const pending = status !== "complete";
   const visible = useMemo(
     () => applicationRows(data?.items ?? [], expanded),
@@ -83,14 +97,14 @@ export default function ApplicationUnits({
     };
   }, [scanId, status, pending, search, page, revision, reload, onError]);
 
-  async function inspect(entryId: number, open: boolean) {
-    try {
-      const file = await api<FileRecord>("entry_detail", { scanId, entryId });
-      if (open) onOpen(file);
-      else onDetail(file);
-    } catch (e) {
-      onError(e);
-    }
+  function inspect(entryId: number, action: "open" | "detail") {
+    cancelInspection.current?.();
+    cancelInspection.current = startFileDetailLoad({
+      scanId,
+      entryId,
+      onResult: action === "open" ? onOpen : onDetail,
+      onError,
+    });
   }
   function toggle(id: string) {
     setExpanded((old) => {
@@ -118,7 +132,7 @@ export default function ApplicationUnits({
   return (
     <section className="application-units" aria-label="应用与文件夹占用">
       <p className="unit-intro">
-        点击箭头展开子项，点击“查看文件”进入目录。应用识别仅供参考，不代表可以删除。
+        展开应用可查看安装与数据位置，未归属内容单独列出。应用识别仅供参考，不代表可以删除。
         <HelpTip label="应用如何分组" text={helpText.appBoundary} />
       </p>
       <div className="list-toolbar">
@@ -179,30 +193,65 @@ export default function ApplicationUnits({
                         onClick={() => {
                           if (canExpand(unit)) toggle(unit.id);
                           else if (unit.components[0])
-                            void inspect(unit.components[0].entryId, true);
+                            void inspect(unit.components[0].entryId, "open");
                         }}
                       />
-                      {unit.children.length > 0 &&
-                        unit.components.length === 1 && (
+                      <div className="unit-actions">
+                        {unit.components.length === 1 && (
                           <button
                             className="icon-button unit-inspect"
-                            aria-label={`查看全部文件 ${unit.name}`}
-                            title="查看全部文件"
+                            aria-label={`${unit.children.length ? "查看全部文件" : "查看详情"} ${unit.name}`}
+                            title={
+                              unit.children.length ? "查看全部文件" : "查看详情"
+                            }
                             onClick={() =>
-                              void inspect(unit.components[0].entryId, true)
+                              void inspect(
+                                unit.components[0].entryId,
+                                unit.children.length ? "open" : "detail",
+                              )
                             }
                           >
-                            <FolderOpen size={16} />
+                            {unit.children.length ? (
+                              <FolderOpen size={16} />
+                            ) : (
+                              <Info size={16} />
+                            )}
                           </button>
                         )}
+                        <AddToBasketButton
+                          name={unit.name}
+                          disabled={busy}
+                          queued={
+                            unit.components.length === 1 &&
+                            queued.has(unit.components[0].entryId)
+                          }
+                          adding={
+                            unit.components.length === 1 &&
+                            adding.has(unit.components[0].entryId)
+                          }
+                          disabledReason={unitCleanupBlockReason(unit)}
+                          onClick={() => {
+                            if (!unitCleanupBlockReason(unit))
+                              onAddToBasket(unit.components[0].entryId);
+                          }}
+                        />
+                      </div>
                     </>
                   ) : (
                     <ComponentSummary
                       component={item.component}
-                      onOpen={() => void inspect(item.component.entryId, true)}
-                      onDetail={() =>
-                        void inspect(item.component.entryId, false)
+                      onOpen={() =>
+                        void inspect(item.component.entryId, "open")
                       }
+                      onDetail={() =>
+                        void inspect(item.component.entryId, "detail")
+                      }
+                      onAddToBasket={() =>
+                        onAddToBasket(item.component.entryId)
+                      }
+                      busy={busy}
+                      queued={queued.has(item.component.entryId)}
+                      adding={adding.has(item.component.entryId)}
                     />
                   )}
                 </div>

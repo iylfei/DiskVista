@@ -1,4 +1,6 @@
-use crate::{application_index::ApplicationIndex, safety::SafetyPolicy};
+use crate::{
+    application_index::ApplicationIndex, application_origins::OriginKind, safety::SafetyPolicy,
+};
 use anyhow::Result;
 use cleaner_domain::{Assessment, Evidence, FileRecord, InstalledApp, Settings};
 use cleaner_platform::{normalize, within};
@@ -36,6 +38,7 @@ pub struct RuleSet {
     pub version: String,
     pub rules: Vec<Rule>,
     matchers: Vec<Option<GlobMatcher>>,
+    expanded_roots: Vec<Option<String>>,
 }
 
 pub fn expand_env(value: &str) -> Option<String> {
@@ -59,7 +62,7 @@ impl RuleSet {
         let extra: Pack =
             serde_json::from_str(include_str!("../../../assets/rules/community.json"))?;
         let version = format!(
-            "{}:{}:{}:classifier-2",
+            "{}:{}:{}:classifier-3",
             base.version, extra.version, community
         );
         let mut rules = base.rules;
@@ -69,7 +72,11 @@ impl RuleSet {
                 r
             }));
         }
-        let matchers = rules
+        Ok(Self::compile(version, rules))
+    }
+
+    fn compile(version: String, rules: Vec<Rule>) -> Self {
+        let expanded_roots: Vec<_> = rules
             .iter()
             .map(|r| {
                 if r.detect_files
@@ -79,22 +86,62 @@ impl RuleSet {
                     None
                 } else {
                     expand_env(&r.root)
-                        .and_then(|s| {
-                            GlobBuilder::new(&s.replace('\\', "/"))
-                                .literal_separator(true)
-                                .case_insensitive(true)
-                                .build()
-                                .ok()
-                        })
-                        .map(|g| g.compile_matcher())
                 }
             })
             .collect();
-        Ok(Self {
+        let matchers = expanded_roots
+            .iter()
+            .map(|root| {
+                root.as_ref()
+                    .and_then(|s| {
+                        GlobBuilder::new(&s.replace('\\', "/"))
+                            .literal_separator(true)
+                            .case_insensitive(true)
+                            .build()
+                            .ok()
+                    })
+                    .map(|g| g.compile_matcher())
+            })
+            .collect();
+        Self {
             version,
             rules,
             matchers,
-        })
+            expanded_roots,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_rules(rules: Vec<Rule>) -> Self {
+        Self::compile("test".into(), rules)
+    }
+
+    pub(crate) fn directory_roots(&self) -> impl Iterator<Item = (&Rule, &str, &GlobMatcher)> {
+        self.rules
+            .iter()
+            .zip(&self.expanded_roots)
+            .zip(&self.matchers)
+            .filter_map(|((rule, path), matcher)| Some((rule, path.as_deref()?, matcher.as_ref()?)))
+    }
+
+    pub(crate) fn matching_rule(&self, normalized_path: &str) -> Option<&Rule> {
+        let slash_path = normalized_path.replace('\\', "/");
+        self.rules
+            .iter()
+            .zip(&self.matchers)
+            .find_map(|(rule, matcher)| {
+                let matches = matcher.as_ref().is_some_and(|m| {
+                    std::iter::once(slash_path.as_str())
+                        .chain(slash_path.match_indices('/').map(|(i, _)| &slash_path[..i]))
+                        .any(|ancestor| m.is_match(ancestor))
+                });
+                (matches
+                    && !rule
+                        .excludes
+                        .iter()
+                        .any(|e| expand_env(e).is_some_and(|root| within(normalized_path, &root))))
+                .then_some(rule)
+            })
     }
 
     pub fn classify(
@@ -129,21 +176,7 @@ impl RuleSet {
             ..Default::default()
         };
         let p = normalize(&file.path);
-        let slash_path = p.replace('\\', "/");
-        for (rule, matcher) in self.rules.iter().zip(&self.matchers) {
-            let matches = matcher.as_ref().is_some_and(|m| {
-                std::iter::once(slash_path.as_str())
-                    .chain(slash_path.match_indices('/').map(|(i, _)| &slash_path[..i]))
-                    .any(|ancestor| m.is_match(ancestor))
-            });
-            if !matches
-                || rule
-                    .excludes
-                    .iter()
-                    .any(|e| expand_env(e).is_some_and(|r| within(&p, &r)))
-            {
-                continue;
-            }
+        if let Some(rule) = self.matching_rule(&p) {
             a.category = rule.category.clone();
             a.owner = Some(rule.owner.clone());
             a.confidence = if rule.community { "medium" } else { "high" }.into();
@@ -181,7 +214,6 @@ impl RuleSet {
                     detail: rule.warning.clone(),
                 });
             }
-            break;
         }
         if let Some((_, label)) = policy
             .settings
@@ -196,24 +228,50 @@ impl RuleSet {
                 source: "用户标注".into(),
                 detail: label.clone(),
             });
-        } else if let Some(app) = apps.owner(&p) {
-            a.owner = Some(app.name.clone());
-            a.confidence = if app.source.contains("快捷方式") {
-                "medium"
-            } else {
-                "high"
+        } else if let Some(origin) = apps.origin(&p) {
+            // A specific cleanup rule can be stronger than an inferred data alias.
+            // Installation records still identify the enclosing installed product.
+            if a.owner.is_none() || origin.kind == OriginKind::Installation {
+                a.owner = Some(origin.name.clone());
+                a.confidence = origin.confidence.into();
             }
-            .into();
             if a.rule_id.is_none() {
-                a.category = "application".into();
-                a.purpose = format!("{} 的程序安装内容", app.name);
-                a.consequence = "直接删除可能导致应用无法启动或组件缺失，请使用应用管理入口".into();
-                a.recovery = "通常需要通过原安装程序修复或重新安装；个人数据应另行备份".into();
+                match origin.kind {
+                    OriginKind::Installation => {
+                        a.category = "application".into();
+                        a.purpose = format!(
+                            "{} 的程序安装内容；安装位置关联不等于创建进程记录",
+                            origin.name
+                        );
+                        a.consequence =
+                            "直接删除可能导致应用无法启动或组件缺失，请使用应用管理入口".into();
+                        a.recovery =
+                            "通常需要通过原安装程序修复或重新安装；个人数据应另行备份".into();
+                    }
+                    OriginKind::ApplicationData => {
+                        a.category = "application_data".into();
+                        a.purpose = if origin.confidence == "low" {
+                            format!(
+                                "可能与 {} 关联的数据，依据目录名称推断；用途和创建进程未确认",
+                                origin.name
+                            )
+                        } else {
+                            format!("与 {} 关联的应用数据，可能包含配置、缓存及个人内容；未记录创建进程", origin.name)
+                        };
+                        a.consequence =
+                            "删除可能丢失配置、个人内容或影响应用功能；不能将整个数据目录视为缓存"
+                                .into();
+                    }
+                    OriginKind::Portable => {
+                        a.category = "application".into();
+                        a.purpose = format!("可能是 {} 的应用文件；依据可执行文件布局推断，未确认真实产品或创建进程", origin.name);
+                        a.consequence =
+                            "可能包含便携程序、模型、配置或安装材料；删除前请确认用途与数据备份"
+                                .into();
+                    }
+                }
             }
-            a.evidence.push(Evidence {
-                source: app.source.clone(),
-                detail: format!("{} · {}", app.name, app.install_location),
-            });
+            a.evidence.push(origin.evidence.clone());
         } else if a.owner.is_none() {
             let name = file.name.to_lowercase();
             let matches: Vec<_> = if file.is_dir && name.len() > 3 {
@@ -402,5 +460,56 @@ mod tests {
             &[],
         );
         assert_eq!(a.risk, "protected");
+    }
+
+    #[test]
+    fn app_data_name_evidence_is_inherited_without_lowering_deletion_risk() {
+        let local = std::env::var("LOCALAPPDATA").unwrap();
+        let app = InstalledApp {
+            id: "fixture-editor".into(),
+            name: "FixtureEditor".into(),
+            publisher: String::new(),
+            install_location: "D:\\Installed\\FixtureEditor".into(),
+            source: "Windows 卸载清单".into(),
+            last_used: None,
+        };
+        let policy = SafetyPolicy::new(Default::default());
+        let index = ApplicationIndex::new(&[app], &policy);
+        let rules = RuleSet::load(false).unwrap();
+        let f = FileRecord {
+            path: format!("{local}\\FixtureEditor\\profiles\\config.json"),
+            name: "config.json".into(),
+            ..Default::default()
+        };
+        let assessment = rules.classify_indexed(&f, &policy, &index);
+        assert_eq!(assessment.owner.as_deref(), Some("FixtureEditor"));
+        assert_eq!(assessment.confidence, "low");
+        assert_eq!(assessment.category, "application_data");
+        assert_eq!(assessment.risk, "review");
+        assert!(assessment.purpose.contains("可能"));
+        let sensitive = FileRecord {
+            path: format!("{local}\\FixtureEditor\\credentials.json"),
+            name: "credentials.json".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            rules.classify_indexed(&sensitive, &policy, &index).risk,
+            "protected"
+        );
+    }
+
+    #[test]
+    fn vendor_container_is_not_attributed_to_one_product() {
+        let local = std::env::var("LOCALAPPDATA").unwrap();
+        let f = FileRecord {
+            path: format!("{local}\\Microsoft\\UnrecognizedProduct\\file.bin"),
+            ..Default::default()
+        };
+        let assessment =
+            RuleSet::load(false)
+                .unwrap()
+                .classify(&f, &SafetyPolicy::new(Default::default()), &[]);
+        assert!(assessment.owner.is_none());
+        assert_ne!(assessment.risk, "low");
     }
 }

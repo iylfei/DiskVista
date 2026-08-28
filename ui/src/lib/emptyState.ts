@@ -1,4 +1,9 @@
-export function suggestionEmpty(status: string, risk: string, search: string) {
+export function suggestionEmpty(
+  status: string,
+  risk: string,
+  search: string,
+  analysisStatus = "",
+) {
   if (["queued", "scanning", "aggregating"].includes(status))
     return {
       title: "正在扫描",
@@ -10,6 +15,12 @@ export function suggestionEmpty(status: string, risk: string, search: string) {
       title: "这次扫描没有完成",
       description: "可以重新扫描，或在空间地图中查看已经扫描到的内容。",
       reset: false,
+    };
+  if (analysisStatus)
+    return {
+      title: "没有符合当前 AI 筛选的文件",
+      description: "可以调整 AI 分析筛选，或清除筛选查看其他文件。",
+      reset: true,
     };
   if (search)
     return {

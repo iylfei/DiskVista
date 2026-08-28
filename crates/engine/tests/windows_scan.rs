@@ -247,6 +247,13 @@ fn parent_child_targets_are_deduplicated_and_cancelled_batch_is_safe() {
     assert!(preview.items[0].allowed, "{:?}", preview.items);
     let result = cleanup::execute(&store, &preview, true, Arc::new(AtomicBool::new(true))).unwrap();
     assert_eq!(result[0].status, "skipped");
+    let recorded = result[0].snapshot.as_ref().unwrap();
+    assert_eq!(recorded.name, dir.name);
+    assert!(recorded.is_dir);
+    assert_eq!(
+        store.history().unwrap()[0].snapshot.as_ref().unwrap().name,
+        dir.name
+    );
     assert!(path.exists());
 }
 

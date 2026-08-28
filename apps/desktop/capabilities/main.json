@@ -29,6 +29,7 @@
     "allow-execute-cleanup",
     "allow-cancel-cleanup",
     "allow-history",
+    "allow-history-page",
     "allow-open-location",
     "allow-open-system",
     "allow-llm-context",
@@ -37,6 +38,7 @@
     "allow-analyze-scan",
     "allow-cancel-analysis",
     "allow-analysis-results",
+    "allow-analysis-summaries",
     "allow-test-connection"
   ]
 }

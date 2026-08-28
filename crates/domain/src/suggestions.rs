@@ -9,6 +9,7 @@ pub struct SuggestionQuery {
     pub search: String,
     pub risk: String,
     pub sort: String,
+    pub analysis_status: String,
     pub offset: usize,
     pub limit: usize,
 }

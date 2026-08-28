@@ -1,11 +1,22 @@
 import { useEffect, useState } from "react";
-import { X, FolderOpen, ShieldPlus, Sparkles, Info } from "lucide-react";
-import { api, bytes, date, riskText, statusText } from "../lib/api";
+import {
+  X,
+  FolderOpen,
+  ShieldPlus,
+  Sparkles,
+  Info,
+  Check,
+  ListPlus,
+} from "lucide-react";
+import { api, bytes, date, riskText } from "../lib/api";
 import type { FileRecord, AnalysisContext, AnalysisResult } from "../lib/types";
 import Modal from "./Modal";
 import HelpTip from "./HelpTip";
 import { helpText } from "../lib/helpText";
 import { startAnalysisPolling } from "../lib/analysisPolling";
+import AnalysisResultCard from "./AnalysisResultCard";
+import AnalysisHistory from "./AnalysisHistory";
+import { fileCleanupBlockReason } from "../lib/cleanupTarget";
 export default function DetailPanel({
   file,
   scanId,
@@ -14,8 +25,10 @@ export default function DetailPanel({
   revision = 0,
   selected = false,
   queued = false,
+  addingToBasket = false,
   onClose,
   onSelect,
+  onAddToBasket,
   onChanged,
   onError,
 }: {
@@ -26,8 +39,10 @@ export default function DetailPanel({
   revision?: number;
   selected?: boolean;
   queued?: boolean;
+  addingToBasket?: boolean;
   onClose: () => void;
   onSelect: () => void;
+  onAddToBasket?: () => void;
   onChanged: () => void;
   onError: (e: unknown) => void;
 }) {
@@ -163,7 +178,7 @@ export default function DetailPanel({
             <dt>
               {["application_container", "system"].includes(a.category)
                 ? "目录类型"
-                : "来源"}
+                : "关联应用"}
             </dt>
             <dd>
               {a.category === "application_container" ? (
@@ -263,55 +278,8 @@ export default function DetailPanel({
           >
             {llmEnabled ? "预览将发送的信息" : "在设置中启用 AI"}
           </button>
-          {results.map((r) => (
-            <div className="analysis-card" key={r.id}>
-              <span
-                className={`badge ${r.status === "stale" ? "review" : "neutral"}`}
-              >
-                {statusText(r.status)}
-              </span>
-              <small>
-                {r.includedContent ? "扫描记录与授权文本" : "基于扫描记录"} ·{" "}
-                {date(r.created)} ·{" "}
-                {r.promptTokens == null
-                  ? "用量未知"
-                  : `输入 ${r.promptTokens} / 输出 ${r.completionTokens ?? "未知"} tokens`}
-                <HelpTip label="Token 用量" text={helpText.tokens} />
-              </small>
-              {r.assessment ? (
-                <>
-                  <h4>{r.assessment.purpose}</h4>
-                  <p>{r.assessment.source}</p>
-                  <p>{r.assessment.consequences}</p>
-                  <p>{r.assessment.recovery}</p>
-                  <p>{r.assessment.recommendation}</p>
-                  <p className="muted">
-                    模型自评置信度：
-                    {{ high: "高", medium: "中", low: "低" }[
-                      r.assessment.confidence
-                    ] ?? "未知"}
-                    （不等于删除风险）
-                    <HelpTip
-                      label="AI 自评置信度"
-                      text={helpText.aiConfidence}
-                    />
-                  </p>
-                  {r.assessment.uncertainties.length > 0 && (
-                    <p className="warning-text">
-                      不确定：{r.assessment.uncertainties.join("；")}
-                    </p>
-                  )}
-                  {r.assessment.questions.map((q) => (
-                    <p key={q}>待你确认：{q}</p>
-                  ))}
-                  <small>
-                    证据：{r.assessment.evidence.join("、") || "没有充分证据"}
-                  </small>
-                </>
-              ) : (
-                <p>{r.message}</p>
-              )}
-            </div>
+          {results.map((result) => (
+            <AnalysisResultCard result={result} key={result.id} />
           ))}
           <button
             disabled={analysisActive || refreshingResults}
@@ -322,14 +290,37 @@ export default function DetailPanel({
         </section>
       </div>
       <footer>
-        <button
-          className="primary"
-          disabled={a.risk === "protected" || queued}
-          aria-pressed={selected || queued}
-          onClick={onSelect}
-        >
-          {queued ? "已在待清理清单中" : selected ? "取消选择" : "选择此项"}
-        </button>
+        {onAddToBasket && (
+          <button
+            className="primary"
+            disabled={
+              queued ||
+              addingToBasket ||
+              !!fileCleanupBlockReason(file) ||
+              annotating
+            }
+            aria-busy={addingToBasket || undefined}
+            title={fileCleanupBlockReason(file) || "加入待清理清单"}
+            onClick={onAddToBasket}
+          >
+            {queued ? <Check size={15} /> : <ListPlus size={15} />}
+            {queued
+              ? "已加入待清理清单"
+              : addingToBasket
+                ? "正在添加…"
+                : "加入待清理清单"}
+          </button>
+        )}
+        {(!onAddToBasket || !queued) && (
+          <button
+            className={onAddToBasket ? undefined : "primary"}
+            disabled={a.risk === "protected" || queued || addingToBasket}
+            aria-pressed={selected || queued}
+            onClick={onSelect}
+          >
+            {queued ? "已在待清理清单中" : selected ? "取消选择" : "选择此项"}
+          </button>
+        )}
       </footer>
       {context && (
         <Modal
@@ -349,6 +340,14 @@ export default function DetailPanel({
             <pre className="metadata-preview">
               {JSON.stringify(context.context, null, 2)}
             </pre>
+            {(context.context.historyReferences?.length ?? 0) > 0 && (
+              <section>
+                <h3>同时发送的回收历史</h3>
+                <AnalysisHistory
+                  references={context.context.historyReferences}
+                />
+              </section>
+            )}
             <h3>
               可选：读取少量文件内容
               <HelpTip label="正文采样" text={helpText.sampling} />

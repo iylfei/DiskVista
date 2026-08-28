@@ -1,0 +1,20 @@
+.history-page .history-list {
+  min-height: 150px;
+}
+.history-page .history-list .empty {
+  min-height: 150px;
+}
+.history-page .history-list [role="alert"] small {
+  overflow-wrap: anywhere;
+}
+.history-page .table-footer {
+  padding-inline: 0;
+}
+.history-page .table-footer > span {
+  white-space: nowrap;
+}
+@media (max-width: 640px) {
+  .history-page .table-footer {
+    flex-wrap: wrap;
+  }
+}

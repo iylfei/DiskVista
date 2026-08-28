@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { addSelection, cleanupResult, selectedUsage } from "./selection";
+import {
+  addBasketSelection,
+  addSelection,
+  cleanupResult,
+  removeRecycledSelection,
+  selectedUsage,
+} from "./selection";
+import { fileCleanupBlockReason } from "./cleanupTarget";
 import { suggestionEmpty } from "./emptyState";
 import type { FileRecord, HistoryItem } from "./types";
 
@@ -15,6 +22,8 @@ function file(
     allocatedBytes: size,
     logicalBytes: size,
     isDir,
+    complete: true,
+    hasBlockedChildren: false,
     assessment: { risk: "review" },
   } as FileRecord;
 }
@@ -51,6 +60,49 @@ describe("cleanup selection", () => {
       ),
     ).toThrow("500");
   });
+
+  it("queues only the requested targets and preserves other pending selections", () => {
+    const requested = file(1, "D:\\one", 10);
+    const other = file(2, "D:\\two", 20);
+    const current = {
+      pending: new Map([
+        [requested.id, requested],
+        [other.id, other],
+      ]),
+      basket: new Map<number, FileRecord>(),
+    };
+    const next = addBasketSelection(current, [requested]);
+    expect([...next.basket.keys()]).toEqual([1]);
+    expect([...next.pending.keys()]).toEqual([2]);
+    expect(next.added).toBe(1);
+    expect(current.pending.size).toBe(2);
+    expect(current.basket.size).toBe(0);
+    const again = addBasketSelection(next, [requested]);
+    expect(again.added).toBe(0);
+    expect([...again.pending.keys()]).toEqual([2]);
+  });
+
+  it("does not add protected files and enforces the combined pending and basket limit atomically", () => {
+    const pending = new Map(
+      Array.from(
+        { length: 500 },
+        (_, id) => [id, file(id, `D:\\${id}`, 1)] as const,
+      ),
+    );
+    const current = { pending, basket: new Map<number, FileRecord>() };
+    const extra = file(500, "D:\\extra", 1);
+    expect(() => addBasketSelection(current, [extra])).toThrow("500");
+    expect(current.pending.size).toBe(500);
+    expect(current.basket.size).toBe(0);
+    const moved = addBasketSelection(current, [pending.get(0)!]);
+    expect(moved.pending.size).toBe(499);
+    expect(moved.basket.size).toBe(1);
+    const blocked = {
+      ...extra,
+      assessment: { ...extra.assessment, risk: "protected" },
+    };
+    expect(addBasketSelection(moved, [blocked]).basket.size).toBe(1);
+  });
   it("reports outcomes without calling recycled bytes released space", () => {
     const items = [
       { status: "recycled", bytes: 100 },
@@ -63,6 +115,57 @@ describe("cleanup selection", () => {
       failed: 1,
       bytes: 100,
     });
+  });
+
+  it("removes only confirmed recycled targets and their actual descendants", () => {
+    const files = [
+      file(1, "D:\\App", 100, true),
+      file(2, "d:/app/cache/item.bin", 40),
+      file(3, "D:\\App-copy", 30),
+      file(4, "D:\\Other", 20),
+      file(5, "D:\\Failed", 20),
+    ];
+    const current = new Map(files.map((item) => [item.id, item]));
+    const next = removeRecycledSelection(current, [
+      { status: "recycled", path: "d:\\APP\\", snapshot: { isDir: true } },
+      { status: "skipped", path: "D:\\Other" },
+      { status: "failed", path: "D:\\Failed" },
+    ] as HistoryItem[]);
+    expect([...next.keys()]).toEqual([3, 4, 5]);
+    expect(current.size).toBe(5);
+  });
+
+  it("does not infer a parent directory from a recycled file or missing snapshot", () => {
+    const files = [file(1, "D:\\one", 10), file(2, "D:\\one\\two", 5)];
+    const current = new Map(files.map((item) => [item.id, item]));
+    for (const snapshot of [undefined, { isDir: false }]) {
+      expect([
+        ...removeRecycledSelection(current, [
+          { status: "recycled", path: "D:\\one", snapshot },
+        ] as HistoryItem[]).keys(),
+      ]).toEqual([2]);
+    }
+  });
+
+  it("blocks unsafe shortcuts before requesting a cleanup preview", () => {
+    const target = file(1, "D:\\one", 10, true);
+    expect(fileCleanupBlockReason(target)).toBeNull();
+    expect(fileCleanupBlockReason({ ...target, complete: false })).toContain(
+      "未扫描完整",
+    );
+    expect(
+      fileCleanupBlockReason({ ...target, hasBlockedChildren: true }),
+    ).toContain("受保护");
+    expect(
+      fileCleanupBlockReason({
+        ...target,
+        assessment: {
+          ...target.assessment,
+          risk: "protected",
+          protectedReason: "安装目录",
+        },
+      }),
+    ).toBe("安装目录");
   });
 });
 
@@ -78,5 +181,18 @@ describe("contextual empty states", () => {
       "匹配",
     );
     expect(suggestionEmpty("complete", "", "").reset).toBe(false);
+  });
+
+  it("offers clearing an empty AI filter without claiming the scan has no suggestions", () => {
+    for (const status of ["analyzed", "unanalyzed"]) {
+      expect(suggestionEmpty("complete", "", "", status)).toMatchObject({
+        title: "没有符合当前 AI 筛选的文件",
+        reset: true,
+      });
+    }
+    expect(suggestionEmpty("scanning", "", "", "analyzed")).toMatchObject({
+      title: "正在扫描",
+      reset: false,
+    });
   });
 });

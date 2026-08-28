@@ -36,6 +36,20 @@ pub(crate) fn set_output_limit(body: &mut Value, settings: &LlmSettings, limit: 
     }
 }
 
+fn response_byte_limit(body: &Value) -> u64 {
+    const MINIMUM: u64 = 262_144;
+    const MAXIMUM: u64 = 16 * 1024 * 1024;
+    body.get("max_completion_tokens")
+        .or_else(|| body.get("max_tokens"))
+        .and_then(Value::as_u64)
+        .map_or(MAXIMUM, |tokens| {
+            tokens
+                .saturating_mul(16)
+                .saturating_add(65_536)
+                .clamp(MINIMUM, MAXIMUM)
+        })
+}
+
 pub(crate) struct ChatClient {
     client: Client,
     url: Url,
@@ -69,17 +83,19 @@ impl ChatClient {
             })
         })?;
         let status = response.status();
-        let mut raw = String::new();
+        let byte_limit = response_byte_limit(body);
+        let mut raw = Vec::new();
         response
-            .take(262145)
-            .read_to_string(&mut raw)
-            .map_err(|_| anyhow!("服务返回了无效 UTF-8 响应"))?;
-        if raw.len() > 262144 {
-            bail!("服务响应超过限制");
+            .take(byte_limit + 1)
+            .read_to_end(&mut raw)
+            .map_err(|_| anyhow!("AI 服务响应读取失败"))?;
+        if raw.len() as u64 > byte_limit {
+            bail!("服务响应超过本次允许的大小限制，请检查模型输出或调整单次输出上限");
         }
         if budget.cancel.load(Ordering::Relaxed) {
             bail!("分析已取消，响应已丢弃");
         }
+        let raw = String::from_utf8(raw).map_err(|_| anyhow!("服务返回了无效 UTF-8 响应"))?;
         Ok(ChatResponse { status, raw })
     }
 }

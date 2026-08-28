@@ -233,30 +233,7 @@ pub async fn query_entries(
     query: EntryQuery,
 ) -> Result<EntryPage, String> {
     let state = state.inner().clone();
-    crate::background::read(move || {
-        let mut result = state.store.query(&query).map_err(error)?;
-        let scan = state.store.scan(&query.scan_id).map_err(error)?;
-        let settings = state.store.settings().map_err(error)?;
-        let rules = RuleSet::load(settings.community_enabled).map_err(error)?;
-        let policy = SafetyPolicy::new(settings);
-        let apps = cleaner_engine::application_index::ApplicationIndex::new(
-            &state.store.apps(&query.scan_id).map_err(error)?,
-            &policy,
-        );
-        for f in &mut result.items {
-            f.assessment = rules.classify_indexed(f, &policy, &apps);
-            if !f.complete
-                || f.has_blocked_children
-                || cleaner_platform::normalize(&f.path) == cleaner_platform::normalize(&scan.root)
-            {
-                f.assessment.risk = "protected".into();
-                f.assessment.protected_reason =
-                    Some("扫描根目录、不完整目标或包含受保护后代，不可整体回收".into());
-            }
-        }
-        Ok(result)
-    })
-    .await
+    crate::background::read(move || state.query_entries(&query)).await
 }
 #[tauri::command]
 pub async fn application_units(
@@ -269,14 +246,13 @@ pub async fn application_units(
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         state.store.require_finished(&scan_id).map_err(error)?;
-        let key = format!(
-            "{}:{}",
-            scan_id,
-            crate::state::classification_key(&state.store.settings().map_err(error)?)?
-        );
+        let policy = SafetyPolicy::new(state.store.settings().map_err(error)?);
+        let (key, index) = state.application_index(&scan_id, &policy)?;
         let mut snapshot = state.units_snapshot.lock().unwrap();
         if snapshot.as_ref().is_none_or(|(old, _)| old != &key) {
-            let units = cleaner_engine::units::build(&state.store, &scan_id).map_err(error)?;
+            let units =
+                cleaner_engine::units::build_indexed(&state.store, &scan_id, &policy, &index)
+                    .map_err(error)?;
             *snapshot = Some((key, units));
         }
         let units = &snapshot.as_ref().unwrap().1;
@@ -298,17 +274,20 @@ pub async fn space_map(
 ) -> Result<serde_json::Value, String> {
     let state = state.inner().clone();
     crate::background::read(move || {
-        let root = state.store.by_path(&scan_id, &parent).map_err(error)?;
-        let children = state
-            .store
-            .query(&EntryQuery {
-                scan_id,
+        state.with_classification(&scan_id, |classifier, _| {
+            let mut root = state.store.by_path(&scan_id, &parent)?;
+            let mut children = state.store.query(&EntryQuery {
+                scan_id: scan_id.clone(),
                 parent: Some(root.path.clone()),
                 limit: 24,
                 ..Default::default()
-            })
-            .map_err(error)?;
-        Ok(serde_json::json!({"parent":root,"items":children.items,"total":children.total}))
+            })?;
+            classifier.apply(&mut root);
+            for file in &mut children.items {
+                classifier.apply(file);
+            }
+            Ok(serde_json::json!({"parent":root,"items":children.items,"total":children.total}))
+        })
     })
     .await
 }
@@ -320,24 +299,8 @@ pub async fn entry_detail(
 ) -> Result<FileRecord, String> {
     let state = state.inner().clone();
     crate::background::read(move || {
-        let mut f = state.store.entry(&scan_id, entry_id).map_err(error)?;
-        let settings = state.store.settings().map_err(error)?;
-        let rules = RuleSet::load(settings.community_enabled).map_err(error)?;
-        let policy = SafetyPolicy::new(settings);
-        let apps = cleaner_engine::application_index::ApplicationIndex::new(
-            &state.store.apps(&scan_id).map_err(error)?,
-            &policy,
-        );
-        f.assessment = rules.classify_indexed(&f, &policy, &apps);
-        if !f.complete || f.has_blocked_children {
-            f.assessment.risk = "protected".into();
-            f.assessment.protected_reason = Some("目标不完整或包含受保护后代".into());
-        }
+        let mut f = state.classified_entry(&scan_id, entry_id)?;
         let scan = state.store.scan(&scan_id).map_err(error)?;
-        if cleaner_platform::normalize(&scan.root) == cleaner_platform::normalize(&f.path) {
-            f.assessment.risk = "protected".into();
-            f.assessment.protected_reason = Some("扫描根目录不能整体清理".into());
-        }
         if let Ok(evidence) = cleaner_platform::metadata::executable_evidence(&f.path) {
             f.assessment.evidence.extend(evidence);
         }
@@ -375,7 +338,7 @@ pub async fn groups(
     kind: String,
 ) -> Result<Vec<Group>, String> {
     let state = state.inner().clone();
-    crate::background::read(move || state.store.groups(&scan_id, &kind).map_err(error)).await
+    crate::background::read(move || state.classified_groups(&scan_id, &kind)).await
 }
 #[tauri::command]
 pub async fn rules(state: State<'_, Shared>) -> Result<serde_json::Value, String> {

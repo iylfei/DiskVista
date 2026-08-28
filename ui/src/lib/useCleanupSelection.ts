@@ -1,6 +1,11 @@
-import { useRef, useState } from "react";
-import type { FileRecord } from "./types";
-import { addSelection } from "./selection";
+import { useEffect, useRef, useState } from "react";
+import type { FileRecord, HistoryItem } from "./types";
+import {
+  addBasketSelection,
+  addSelection,
+  removeRecycledSelection,
+} from "./selection";
+import { createBasketEntryLoader } from "./basketEntryLoader";
 
 function emptySelection() {
   return {
@@ -13,6 +18,19 @@ function emptySelection() {
 export function useCleanupSelection(onError: (error: unknown) => void) {
   const [state, setState] = useState(emptySelection);
   const current = useRef(state);
+  const [adding, setAdding] = useState<Set<number>>(new Set());
+  const errorHandler = useRef(onError);
+  errorHandler.current = onError;
+  const loader = useRef<ReturnType<typeof createBasketEntryLoader> | null>(
+    null,
+  );
+  if (!loader.current)
+    loader.current = createBasketEntryLoader({
+      onAdd: (file) => addFilesToBasket([file]),
+      onPending: setAdding,
+      onError: (error) => errorHandler.current(error),
+    });
+  useEffect(() => () => loader.current?.reset(), []);
 
   function update(next: typeof state) {
     current.current = next;
@@ -29,7 +47,7 @@ export function useCleanupSelection(onError: (error: unknown) => void) {
       addSelection(previous.basket, [...pending.values()]);
       update({ ...previous, pending, message: "" });
     } catch (error) {
-      onError(error);
+      errorHandler.current(error);
     }
   }
 
@@ -49,18 +67,20 @@ export function useCleanupSelection(onError: (error: unknown) => void) {
   function addToBasket() {
     const previous = current.current;
     if (!previous.pending.size) return;
+    addFilesToBasket([...previous.pending.values()]);
+  }
+
+  function addFilesToBasket(files: FileRecord[]) {
+    const previous = current.current;
     try {
-      const basket = addSelection(previous.basket, [
-        ...previous.pending.values(),
-      ]);
-      const added = basket.size - previous.basket.size;
+      const { basket, pending, added } = addBasketSelection(previous, files);
       update({
         basket,
-        pending: new Map(),
-        message: `已添加 ${added} 项到待清理清单`,
+        pending,
+        message: added ? `已添加 ${added} 项到待清理清单` : "已在待清理清单中",
       });
     } catch (error) {
-      onError(error);
+      errorHandler.current(error);
     }
   }
 
@@ -74,13 +94,32 @@ export function useCleanupSelection(onError: (error: unknown) => void) {
   return {
     basket: state.basket,
     pending: state.pending,
+    adding,
     message: state.message,
     select,
     selectMany,
     addToBasket,
+    addEntryToBasket: (scanId: string, entryId: number) => {
+      if (!current.current.basket.has(entryId))
+        void loader.current?.add(scanId, entryId);
+    },
     removeFromBasket,
-    clearBasket: () =>
-      update({ ...current.current, basket: new Map(), message: "" }),
-    reset: () => update(emptySelection()),
+    removeRecycled: (results: HistoryItem[]) => {
+      loader.current?.discardRecycled(results);
+      const previous = current.current;
+      update({
+        pending: removeRecycledSelection(previous.pending, results),
+        basket: removeRecycledSelection(previous.basket, results),
+        message: "",
+      });
+    },
+    clearBasket: () => {
+      loader.current?.reset();
+      update({ ...current.current, basket: new Map(), message: "" });
+    },
+    reset: () => {
+      loader.current?.reset();
+      update(emptySelection());
+    },
   };
 }

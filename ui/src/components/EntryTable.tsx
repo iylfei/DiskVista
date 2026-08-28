@@ -6,7 +6,13 @@ import { bytes, date, riskText } from "../lib/api";
 import HelpTip from "./HelpTip";
 import { helpText } from "../lib/helpText";
 import { fileSource } from "../lib/filePresentation";
+import { useAnalysisSummaries } from "../lib/useAnalysisSummaries";
+import FileAnalysisBadge from "./FileAnalysisBadge";
+import AddToBasketButton from "./AddToBasketButton";
+import { fileCleanupBlockReason } from "../lib/cleanupTarget";
 interface Props {
+  scanId: string;
+  analysisRevision?: string;
   emptyTitle?: string;
   emptyDescription?: string;
   onClearFilters?: () => void;
@@ -17,18 +23,24 @@ interface Props {
   onSelect: (file: FileRecord) => void;
   onDetail: (file: FileRecord) => void;
   onOpen: (file: FileRecord) => void;
+  onAddToBasket?: (file: FileRecord) => void;
+  adding?: Set<number>;
   total: number;
   page: number;
   onPage: (page: number) => void;
   busy?: boolean;
 }
 export default function EntryTable({
+  scanId,
+  analysisRevision = "",
   items,
   selected,
   queued,
   onSelect,
   onDetail,
   onOpen,
+  onAddToBasket,
+  adding,
   total,
   page,
   onPage,
@@ -39,6 +51,11 @@ export default function EntryTable({
   onClearFilters,
 }: Props) {
   const ref = useRef<HTMLDivElement>(null);
+  const { summaries, failed: summariesFailed } = useAnalysisSummaries(
+    scanId,
+    items,
+    analysisRevision,
+  );
   const rows = useVirtualizer({
     count: items.length,
     getScrollElement: () => ref.current,
@@ -46,7 +63,9 @@ export default function EntryTable({
     overscan: 6,
   });
   return (
-    <div className="table-wrap">
+    <div
+      className={`table-wrap${onAddToBasket ? " table-with-basket-action" : ""}`}
+    >
       <div className="file-row table-head">
         <span />
         <span>名称 / 路径</span>
@@ -121,7 +140,7 @@ export default function EntryTable({
                       </small>
                     )}
                   </div>
-                  <div>
+                  <div className="file-hints">
                     {!(
                       quietReview &&
                       ["review", "unknown"].includes(f.assessment.risk)
@@ -131,19 +150,35 @@ export default function EntryTable({
                         {riskText(f.assessment.risk)}
                       </span>
                     )}
+                    <FileAnalysisBadge
+                      result={summaries.get(f.id)}
+                      onOpen={() => onDetail(f)}
+                    />
                     <small>
                       {!f.complete
                         ? "不完整"
                         : `最近变化 ${date(f.latestChange)}`}
                     </small>
                   </div>
-                  <button
-                    className="icon-button"
-                    aria-label={f.isDir ? `打开 ${f.name}` : `查看 ${f.name}`}
-                    onClick={() => (f.isDir ? onOpen(f) : onDetail(f))}
-                  >
-                    <ChevronRight size={16} />
-                  </button>
+                  <div className="file-row-actions">
+                    {onAddToBasket && (
+                      <AddToBasketButton
+                        name={f.name || f.path}
+                        disabled={busy}
+                        queued={inBasket}
+                        adding={adding?.has(f.id)}
+                        disabledReason={fileCleanupBlockReason(f)}
+                        onClick={() => onAddToBasket(f)}
+                      />
+                    )}
+                    <button
+                      className="icon-button"
+                      aria-label={f.isDir ? `打开 ${f.name}` : `查看 ${f.name}`}
+                      onClick={() => (f.isDir ? onOpen(f) : onDetail(f))}
+                    >
+                      <ChevronRight size={16} />
+                    </button>
+                  </div>
                 </div>
               );
             })}
@@ -151,7 +186,14 @@ export default function EntryTable({
         )}
       </div>
       <div className="table-footer">
-        <span>共 {total.toLocaleString()} 项 · 每页 100 项</span>
+        <span>
+          共 {total.toLocaleString()} 项 · 每页 100 项
+          {summariesFailed && (
+            <small className="summary-load-error">
+              AI 标识暂不可用，仍可打开详情查看
+            </small>
+          )}
+        </span>
         <div>
           <button
             disabled={page === 0 || busy}

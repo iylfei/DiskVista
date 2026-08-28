@@ -1,21 +1,23 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Trash2 } from "lucide-react";
-import type { FileRecord, CleanupPreview, HistoryItem } from "../lib/types";
-import { api, bytes } from "../lib/api";
+import type { FileRecord, HistoryItem } from "../lib/types";
+import { bytes } from "../lib/api";
 import { selectedUsage } from "../lib/selection";
+import RecycleDialog from "../components/RecycleDialog";
 
 export default function BasketPage({
   items,
   scanId,
+  addingCount = 0,
   onRemove,
   onDone,
-  onError,
   onFindFiles,
   onClear,
   onBusyChange,
 }: {
   items: FileRecord[];
   scanId: string;
+  addingCount?: number;
   onRemove: (f: FileRecord) => void;
   onDone: (result: HistoryItem[]) => void;
   onError: (e: unknown) => void;
@@ -23,34 +25,36 @@ export default function BasketPage({
   onClear: () => void;
   onBusyChange?: (busy: boolean) => void;
 }) {
-  const [phase, setPhase] = useState<"idle" | "checking" | "recycling">("idle");
+  const [busy, setBusy] = useState(false);
   const running = useRef(false);
-  const busy = phase !== "idle";
+  const [confirmation, setConfirmation] = useState<{
+    scanId: string;
+    files: FileRecord[];
+  } | null>(null);
+  const confirmationRef = useRef<typeof confirmation>(null);
 
-  async function execute() {
-    if (running.current || !items.length) return;
-    running.current = true;
-    setPhase("checking");
-    onBusyChange?.(true);
-    try {
-      const preview = await api<CleanupPreview>("preview_cleanup", {
-        scanId,
-        entryIds: items.map((file) => file.id),
-      });
-      setPhase("recycling");
-      const result = await api<HistoryItem[]>("execute_cleanup", {
-        previewId: preview.id,
-        acknowledgeRisk: true,
-      });
-      onDone(result);
-    } catch (error) {
-      onError(error);
-    } finally {
-      running.current = false;
-      setPhase("idle");
-      onBusyChange?.(false);
-    }
+  function openConfirmation() {
+    if (
+      running.current ||
+      confirmationRef.current ||
+      !items.length ||
+      addingCount > 0
+    )
+      return;
+    const target = { scanId, files: [...items] };
+    confirmationRef.current = target;
+    setConfirmation(target);
   }
+
+  function closeConfirmation() {
+    if (running.current) return;
+    confirmationRef.current = null;
+    setConfirmation(null);
+  }
+
+  useEffect(() => {
+    if (confirmationRef.current?.scanId !== scanId) closeConfirmation();
+  }, [scanId]);
 
   return (
     <section className="panel">
@@ -89,23 +93,35 @@ export default function BasketPage({
         ))
       )}
       <div className="actions">
-        {phase === "recycling" && (
-          <button onClick={() => api("cancel_cleanup").catch(onError)}>
-            取消剩余项
-          </button>
+        {addingCount > 0 && (
+          <span className="muted" role="status" style={{ alignSelf: "center" }}>
+            正在添加 {addingCount} 项…
+          </span>
         )}
         <button
           className="primary"
-          disabled={!items.length || busy}
-          onClick={execute}
+          disabled={!items.length || busy || !!confirmation || addingCount > 0}
+          onClick={openConfirmation}
         >
-          {phase === "checking"
-            ? "正在检查文件…"
-            : phase === "recycling"
-              ? "正在移入回收站…"
-              : "检查并移入回收站"}
+          {busy ? "正在移入回收站…" : "检查并移入回收站"}
         </button>
       </div>
+      {confirmation && (confirmation.scanId === scanId || busy) && (
+        <RecycleDialog
+          scanId={confirmation.scanId}
+          files={confirmation.files}
+          onClose={closeConfirmation}
+          onDone={(result) => {
+            closeConfirmation();
+            onDone(result);
+          }}
+          onBusyChange={(value) => {
+            running.current = value;
+            setBusy(value);
+            onBusyChange?.(value);
+          }}
+        />
+      )}
     </section>
   );
 }

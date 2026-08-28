@@ -21,6 +21,7 @@ fn main() {
             "execute_cleanup",
             "cancel_cleanup",
             "history",
+            "history_page",
             "open_location",
             "open_system",
             "llm_context",
@@ -29,6 +30,7 @@ fn main() {
             "analyze_scan",
             "cancel_analysis",
             "analysis_results",
+            "analysis_summaries",
             "test_connection",
         ]),
     ))

@@ -53,7 +53,7 @@
   color: var(--muted);
   font-size: 12px;
 }
-.map-caption button {
+.map-caption > button {
   font-size: 12px;
   padding: 6px 10px;
   flex: none;
@@ -141,13 +141,22 @@
   align-items: center;
   gap: 10px;
   margin-bottom: 12px;
-  color: var(--muted);
+  padding: 9px 12px;
+  border: 1px solid #dce5ec;
+  border-radius: 7px;
+  background: #f6f9fb;
+  color: #526b80;
   min-width: 0;
   flex: none;
+}
+.snapshot-picker > svg {
+  flex: none;
+  color: var(--blue);
 }
 .snapshot-picker > span {
   white-space: nowrap;
   font-size: 12px;
+  font-weight: 600;
 }
 .snapshot-picker select {
   max-width: 100%;

@@ -58,28 +58,27 @@
 .suggestion-section-heading {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
   margin-bottom: 10px;
 }
+.suggestion-section-heading > strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .suggestion-section-heading select {
   margin-left: auto;
+  max-width: 100%;
   padding: 6px 9px;
-}
-.suggestion-details {
-  border: 1px solid var(--line);
-  background: var(--soft);
-  border-radius: 7px;
-  padding: 10px 12px;
-  margin-bottom: 12px;
-  color: #526373;
-  font-size: 12px;
 }
 .group-selection {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 8px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 12px;
 }
 .group-selection > span {
   margin-right: auto;

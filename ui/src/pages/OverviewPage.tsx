@@ -38,7 +38,6 @@ export default function OverviewPage({
     <>
       <section className="welcome">
         <div>
-          <h2>找出占用空间，选择不再需要的文件</h2>
           <p>选择磁盘或文件夹，查看空间占用。</p>
           <div className="scan-start-actions">
             <select
@@ -126,7 +125,7 @@ export default function OverviewPage({
       <div className="overview-columns">
         <section className="panel">
           <div className="section-heading">
-            <h2>最近一次扫描</h2>
+            <h2>当前扫描</h2>
             {scan && (
               <button onClick={onMap}>
                 查看结果 <ArrowRight size={14} />

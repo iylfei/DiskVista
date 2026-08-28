@@ -107,6 +107,8 @@ pub struct EntryQuery {
     pub limit: u32,
     pub sort: Option<String>,
     #[serde(default)]
+    pub analysis_status: String,
+    #[serde(default)]
     pub directories_only: bool,
     #[serde(default)]
     pub uncertain_only: bool,
@@ -164,4 +166,23 @@ pub struct HistoryItem {
     pub status: String,
     pub message: String,
     pub free_space_delta: i64,
+    #[serde(default)]
+    pub snapshot: Option<HistoryEntrySnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryPage {
+    pub items: Vec<HistoryItem>,
+    pub total: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryEntrySnapshot {
+    pub name: String,
+    pub is_dir: bool,
+    pub owner: Option<String>,
+    pub category: String,
+    pub rule_id: Option<String>,
 }

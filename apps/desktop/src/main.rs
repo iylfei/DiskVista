@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod ai;
+mod ai_batch;
 mod analysis_results;
 mod background;
 mod commands;
@@ -48,6 +49,7 @@ fn main() {
             operations::execute_cleanup,
             operations::cancel_cleanup,
             operations::history,
+            operations::history_page,
             operations::open_location,
             operations::open_system,
             ai::llm_context,
@@ -56,6 +58,7 @@ fn main() {
             scan_analysis::analyze_scan,
             ai::cancel_analysis,
             analysis_results::analysis_results,
+            analysis_results::analysis_summaries,
             ai::test_connection
         ])
         .run(tauri::generate_context!())

@@ -63,10 +63,12 @@ export interface LlmSettings {
   enabled: boolean;
   automatic: boolean;
   metadataConsent: boolean;
+  historyReferenceEnabled: boolean;
   baseUrl: string;
   model: string;
   format: string;
   tokenParameter: string;
+  maxOutputTokens: number;
   minimumBytes: number;
   maxRequests: number;
   concurrency: number;
@@ -193,6 +195,27 @@ export interface HistoryItem {
   status: string;
   message: string;
   freeSpaceDelta: number;
+  snapshot?: HistoryEntrySnapshot | null;
+}
+export interface HistoryPage {
+  items: HistoryItem[];
+  total: number;
+}
+export interface HistoryEntrySnapshot {
+  name: string;
+  isDir: boolean;
+  owner: string | null;
+  category: string;
+  ruleId: string | null;
+}
+export interface HistoryReference {
+  id: string;
+  path: string;
+  bytes: number;
+  recycledAt: number;
+  owner: string | null;
+  category: string | null;
+  matchBasis: string[];
 }
 export interface ContextFile {
   entryId: number;
@@ -213,22 +236,21 @@ export interface AnalysisContext {
   accessed: number;
   evidence: Evidence[];
   files: ContextFile[];
+  historyReferences: HistoryReference[];
   truncated: boolean;
   note: string;
 }
 export interface ModelAssessment {
-  purpose: string;
-  source: string;
-  consequences: string;
-  recovery: string;
-  recommendation: string;
-  confidence: string;
-  uncertainties: string[];
+  deletionAdvice: "consider_delete" | "keep" | "review";
+  reason: string;
   evidence: string[];
-  questions: string[];
+  historyMatches: { historyId: string; reason: string }[];
 }
 export interface AnalysisResult {
+  formatVersion: number;
   id: string;
+  requestId?: string | null;
+  requestItemCount?: number;
   entryId: number;
   status: string;
   message: string;
@@ -237,6 +259,16 @@ export interface AnalysisResult {
   completionTokens: number | null;
   includedContent: boolean;
   created: number;
+  evidenceDetails: { id: string; source: string; detail: string }[];
+  historyReferences: HistoryReference[];
+}
+export interface AnalysisSummary {
+  analysisId: string;
+  entryId: number;
+  created: number;
+  status: "success" | "stale";
+  summary: string;
+  historyMatchCount: number;
 }
 export interface Rule {
   id: string;

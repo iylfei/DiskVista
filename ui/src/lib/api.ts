@@ -20,6 +20,17 @@ export const date = (value: number | null | undefined) =>
   value && value > 0
     ? new Date(value * 1000).toLocaleDateString("zh-CN")
     : "未知";
+export const dateTime = (value: number | null | undefined) =>
+  value && value > 0
+    ? new Date(value * 1000).toLocaleString("zh-CN", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      })
+    : "未知";
 export const riskText = (risk: string) =>
   ({
     low: "较低风险",

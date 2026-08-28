@@ -1,6 +1,9 @@
 //! Application boundaries are an accounting layer above the file index.
 //! All reads use the selected snapshot; this does not scan outside the user's root.
-use crate::{safety::SafetyPolicy, store::Store};
+use crate::{
+    application_index::ApplicationIndex, application_origins::confidence_rank, rules::RuleSet,
+    safety::SafetyPolicy, store::Store,
+};
 use anyhow::Result;
 use cleaner_domain::*;
 use cleaner_platform::{normalize, within};
@@ -8,6 +11,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 mod hierarchy;
+mod rule_boundaries;
 
 const NODE: &str = "id,path_key,parent_key,json_extract(data,'$.path'),json_extract(data,'$.name'),logical,allocated,file_count,complete,risk";
 
@@ -91,6 +95,28 @@ fn boundary(
 }
 
 pub fn build(store: &Store, scan_id: &str) -> Result<Vec<ApplicationUnit>> {
+    let policy = SafetyPolicy::new(store.settings()?);
+    let index = ApplicationIndex::for_scan(store, scan_id, &policy)?;
+    build_indexed(store, scan_id, &policy, &index)
+}
+
+pub fn build_indexed(
+    store: &Store,
+    scan_id: &str,
+    policy: &SafetyPolicy,
+    index: &ApplicationIndex,
+) -> Result<Vec<ApplicationUnit>> {
+    let rules = RuleSet::load(policy.settings.community_enabled)?;
+    build_with_rules(store, scan_id, policy, index, &rules)
+}
+
+fn build_with_rules(
+    store: &Store,
+    scan_id: &str,
+    policy: &SafetyPolicy,
+    index: &ApplicationIndex,
+    rules: &RuleSet,
+) -> Result<Vec<ApplicationUnit>> {
     let c = store.connection()?;
     // Keep all reads in one coherent snapshot while a worker is committing batches.
     c.execute_batch("BEGIN DEFERRED")?;
@@ -100,18 +126,13 @@ pub fn build(store: &Store, scan_id: &str) -> Result<Vec<ApplicationUnit>> {
     let Some(root) = node(&c, scan_id, &root_path)? else {
         return Ok(vec![]);
     };
-    let settings = store.settings()?;
-    let policy = SafetyPolicy::new(settings.clone());
-    let apps = store.apps(scan_id)?;
+    let settings = &policy.settings;
     let mut boundaries = BTreeMap::<String, Boundary>::new();
-    for app in &apps {
-        if !policy.specific_install_root(&app.install_location) {
-            continue;
-        }
-        let location = if within(&root_path, &app.install_location) {
+    for origin in index.origins() {
+        let location = if within(&root_path, &origin.path) {
             &root_path
         } else {
-            &app.install_location
+            &origin.path
         };
         if !within(location, &root_path) {
             continue;
@@ -119,50 +140,17 @@ pub fn build(store: &Store, scan_id: &str) -> Result<Vec<ApplicationUnit>> {
         let Some(n) = node(&c, scan_id, location)? else {
             continue;
         };
-        let confidence = if app.source.contains("快捷方式") {
-            "medium"
-        } else {
-            "high"
-        };
-        let b = boundary(
+        let mut b = boundary(
             n,
-            app.name.clone(),
-            "application",
-            confidence,
-            "installation",
-            format!(
-                "{}：{}；只统计本次扫描范围，不代表可直接删除",
-                app.source, app.install_location
-            ),
+            origin.name.clone(),
+            origin.unit_kind(),
+            origin.confidence,
+            origin.role(),
+            format!("{}：{}", origin.evidence.source, origin.evidence.detail),
         );
-        // Duplicate uninstall/MSIX/shortcut records for the same root count only once.
-        if boundaries
-            .get(&b.node.key)
-            .is_none_or(|old| old.confidence != "high" && confidence == "high")
-        {
-            boundaries.insert(b.node.key.clone(), b);
-        }
-    }
-    // An overly broad installer record must not claim a multi-application container.
-    let shared: Vec<_> = boundaries
-        .keys()
-        .filter(|p| {
-            boundaries
-                .keys()
-                .filter(|q| *q != *p && within(q, p))
-                .take(2)
-                .count()
-                >= 2
-        })
-        .cloned()
-        .collect();
-    for key in shared {
-        // Launchers may legitimately contain other apps, but also own their own
-        // executable. Keep their residual bytes as a separate application.
-        let owns_executable: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM entries WHERE scan_id=?1 AND parent_key=?2 AND is_dir=0 AND path_key LIKE '%.exe')", params![scan_id,key], |r| r.get(0))?;
-        if !owns_executable {
-            boundaries.remove(&key);
-        }
+        b.key = origin.application_key.clone();
+        // When scanning inside an application, the deepest known boundary wins.
+        boundaries.insert(b.node.key.clone(), b);
     }
 
     // Only explicit user labels may join arbitrary locations into one unit.
@@ -183,100 +171,7 @@ pub fn build(store: &Store, scan_id: &str) -> Result<Vec<ApplicationUnit>> {
             boundaries.insert(b.node.key.clone(), b);
         }
     }
-    // Cache rules define data roots, not an application for every individual file.
-    let mut rules = c.prepare(&format!("SELECT {NODE},owner,rule_id FROM entries e WHERE scan_id=?1 AND is_dir=1 AND rule_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM entries p WHERE p.scan_id=e.scan_id AND p.path_key=e.parent_key AND p.rule_id=e.rule_id)"))?;
-    let rows = rules.query_map([scan_id], |r| {
-        Ok((decode(r)?, r.get::<_, Option<String>>(10)?))
-    })?;
-    for row in rows {
-        let (n, owner) = row?;
-        if boundaries.contains_key(&n.key) {
-            continue;
-        }
-        let Some(owner) = owner else {
-            continue;
-        };
-        let matches: Vec<_> = boundaries
-            .values()
-            .filter(|b| {
-                b.kind == "application"
-                    && b.role == "installation"
-                    && b.name.eq_ignore_ascii_case(&owner)
-            })
-            .collect();
-        let mut b = boundary(
-            n,
-            owner.clone(),
-            "application_data",
-            "high",
-            "cache",
-            "匹配到已知应用数据规则；不因归属而放宽清理保护".into(),
-        );
-        if let [app] = matches.as_slice() {
-            b.key = app.key.clone();
-            b.kind = app.kind;
-            b.name = app.name.clone();
-            b.confidence = app.confidence;
-        } else {
-            b.key = format!("data:{}", owner.to_lowercase());
-        }
-        boundaries.insert(b.node.key.clone(), b);
-    }
-
-    // For portable/unregistered software, executable layout is a low-confidence clue.
-    // No executables are run, no binary contents or private configuration are read.
-    let mut exe_parents = c.prepare("SELECT DISTINCT parent_key FROM entries WHERE scan_id=?1 AND is_dir=0 AND path_key LIKE '%.exe'")?;
-    let mut candidates = BTreeMap::new();
-    for key in exe_parents.query_map([scan_id], |r| r.get::<_, String>(0))? {
-        let mut key = key?;
-        if ancestor(&key, &boundaries).is_some() {
-            continue;
-        }
-        for _ in 0..4 {
-            let name = key.rsplit('\\').next().unwrap_or("");
-            if !matches!(
-                name,
-                "bin"
-                    | "bin64"
-                    | "win64"
-                    | "win32"
-                    | "binaries"
-                    | "x64"
-                    | "x86"
-                    | "release"
-                    | "debug"
-            ) {
-                break;
-            }
-            let Some(p) = parent(&key) else {
-                break;
-            };
-            if !within(p, &root_path) {
-                break;
-            }
-            key = p.into();
-        }
-        let Some(n) = node(&c, scan_id, &key)? else {
-            continue;
-        };
-        if policy.system_roots.iter().any(|p| within(&n.path, p))
-            || !policy.specific_install_root(&n.path)
-            || matches!(
-                n.name.to_lowercase().as_str(),
-                "games" | "apps" | "downloads" | "tools" | "common" | "steamapps"
-            )
-            || boundaries.keys().any(|p| within(p, &n.key))
-        {
-            continue;
-        }
-        candidates.insert(n.key.clone(), boundary(n.clone(), n.name.clone(), "possible_application", "low", "unconfirmed", "包含可执行文件的目录结构线索；可能是独立应用，也可能是安装包或工具集合，未确认真实产品名".into()));
-    }
-    // Collapse nested helpers/resources into the outer candidate application.
-    for (key, candidate) in candidates {
-        if ancestor(&key, &boundaries).is_none() {
-            boundaries.insert(key, candidate);
-        }
-    }
+    rule_boundaries::add(&c, scan_id, &root, rules, index, &mut boundaries)?;
 
     // Preserve all remaining bytes. Containers are residual groups, not guessed apps.
     let mut children = c.prepare(&format!(
@@ -284,7 +179,7 @@ pub fn build(store: &Store, scan_id: &str) -> Result<Vec<ApplicationUnit>> {
     ))?;
     for n in children.query_map(params![scan_id, root.key], decode)? {
         let n = n?;
-        if ancestor(&n.key, &boundaries).is_some() {
+        if n.key == root.key || ancestor(&n.key, &boundaries).is_some() {
             continue;
         }
         boundaries.entry(n.key.clone()).or_insert_with(|| {
@@ -308,6 +203,21 @@ pub fn build(store: &Store, scan_id: &str) -> Result<Vec<ApplicationUnit>> {
             "扫描根目录中的未归属内容；不是一个已识别应用".into(),
         )
     });
+    for b in boundaries.values_mut() {
+        let file = FileRecord {
+            path: b.node.path.clone(),
+            name: b.node.name.clone(),
+            is_dir: true,
+            complete: b.node.complete,
+            ..Default::default()
+        };
+        if !file.complete
+            || policy.reason(&file).is_some()
+            || index.installed_reason(&file).is_some()
+        {
+            b.node.risk = "protected".into();
+        }
+    }
     assemble(boundaries, &root.key)
 }
 
@@ -332,12 +242,7 @@ fn assemble(boundaries: BTreeMap<String, Boundary>, root: &str) -> Result<Vec<Ap
             .unwrap_or(b.node.logical)
             .saturating_sub(d.1);
         let files = b.node.files.saturating_sub(d.2);
-        if files == 0
-            && logical == 0
-            && occupied == 0
-            && b.kind == "unassigned"
-            && (path == root || !deductions.contains_key(&path))
-        {
+        if files == 0 && logical == 0 && occupied == 0 && b.kind == "unassigned" {
             continue;
         }
         let id = format!("{:x}", Sha256::digest(b.key.as_bytes()));
@@ -359,11 +264,21 @@ fn assemble(boundaries: BTreeMap<String, Boundary>, root: &str) -> Result<Vec<Ap
         u.file_count = u.file_count.saturating_add(files);
         u.estimated |= b.node.allocated.is_none();
         u.complete &= b.node.complete;
+        if b.kind == "application" {
+            u.kind = b.kind.into();
+        }
+        if confidence_rank(b.confidence) < confidence_rank(&u.confidence) {
+            u.confidence = b.confidence.into();
+        }
+        let mut evidence = b.evidence;
+        if deductions.contains_key(&path) {
+            evidence.push_str("；此处计入的大小已扣除单独归属的子目录；打开目录可查看全部内容");
+        }
         u.components.push(UnitComponent {
             entry_id: b.node.id,
             path: b.node.path,
             role: b.role.into(),
-            evidence: b.evidence,
+            evidence,
             logical_bytes: logical,
             occupied_bytes: occupied,
             file_count: files,
@@ -621,7 +536,7 @@ mod tests {
         assert_eq!(result[0].occupied_bytes, 55);
     }
     #[test]
-    fn rule_data_roots_merge_with_an_unambiguous_matching_application() {
+    fn stale_rule_labels_do_not_override_current_rules() {
         let (_temp, store) = indexed_fixture(
             "D:\\Scope",
             &[
@@ -644,9 +559,163 @@ mod tests {
             )
             .unwrap();
         let result = build(&store, "s").unwrap();
+        assert_eq!(result.len(), 3);
+        assert_eq!(result.iter().map(|u| u.occupied_bytes).sum::<u64>(), 110);
+        assert_eq!(
+            result
+                .iter()
+                .find(|u| u.name == "App")
+                .unwrap()
+                .occupied_bytes,
+            80
+        );
+        assert!(result
+            .iter()
+            .flat_map(|u| &u.components)
+            .all(|c| c.role != "cache"));
+    }
+
+    #[test]
+    fn known_data_and_current_cache_rule_join_one_recorded_application() {
+        let root = std::env::var("APPDATA").unwrap();
+        let install = format!("{root}\\FixtureInstalledCode");
+        let executable = format!("{install}\\code.exe");
+        let data = format!("{root}\\Code");
+        let user_file = format!("{data}\\settings.json");
+        let cache = format!("{data}\\Cache");
+        let cache_file = format!("{cache}\\c.bin");
+        let (_temp, store) = indexed_fixture(
+            &root,
+            &[
+                (&root, true, 0),
+                (&install, true, 0),
+                (&executable, false, 80),
+                (&data, true, 0),
+                (&user_file, false, 10),
+                (&cache, true, 0),
+                (&cache_file, false, 20),
+            ],
+            vec![app("Visual Studio Code", &install)],
+        );
+        let result = build(&store, "s").unwrap();
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].components.len(), 3);
+        assert_eq!(result[0].name, "Visual Studio Code");
+        assert_eq!(result[0].kind, "application");
+        assert_eq!(result[0].confidence, "medium");
         assert_eq!(result[0].occupied_bytes, 110);
+        assert_eq!(result[0].components.len(), 3);
+        assert_eq!(
+            result[0]
+                .components
+                .iter()
+                .find(|c| c.role == "cache")
+                .unwrap()
+                .occupied_bytes,
+            20
+        );
+        assert!(result[0]
+            .components
+            .iter()
+            .find(|c| c.path == data)
+            .unwrap()
+            .evidence
+            .contains("已扣除"));
+    }
+
+    #[test]
+    fn changing_active_rules_rebuilds_boundaries_without_rewriting_the_snapshot() {
+        let (_temp, store) = indexed_fixture(
+            "D:\\FixtureScope",
+            &[
+                ("D:\\FixtureScope", true, 0),
+                ("D:\\FixtureScope\\Logs", true, 0),
+                ("D:\\FixtureScope\\Logs\\failure.log", false, 20),
+            ],
+            vec![],
+        );
+        let mut rule = RuleSet::load(false)
+            .unwrap()
+            .rules
+            .into_iter()
+            .find(|r| r.id == "crash-dumps")
+            .unwrap();
+        rule.id = "fixture-community-diagnostic".into();
+        rule.root = "D:\\FixtureScope\\Logs".into();
+        rule.owner = "Fixture Application".into();
+        rule.community = true;
+        let enabled = RuleSet::test_rules(vec![rule]);
+        let disabled = RuleSet::test_rules(vec![]);
+        let policy = SafetyPolicy::new(Default::default());
+        let index = ApplicationIndex::for_scan(&store, "s", &policy).unwrap();
+        let enabled_result = build_with_rules(&store, "s", &policy, &index, &enabled).unwrap();
+        assert_eq!(enabled_result[0].name, "Fixture Application");
+        assert_eq!(enabled_result[0].confidence, "medium");
+        assert_eq!(enabled_result[0].components[0].role, "diagnostic");
+        let disabled_result = build_with_rules(&store, "s", &policy, &index, &disabled).unwrap();
+        assert_eq!(disabled_result[0].kind, "unassigned");
+        assert_eq!(
+            disabled_result[0].occupied_bytes,
+            enabled_result[0].occupied_bytes
+        );
+        assert!(store
+            .by_path("s", "D:\\FixtureScope\\Logs")
+            .unwrap()
+            .assessment
+            .rule_id
+            .is_none());
+    }
+
+    #[test]
+    fn independent_applications_stay_visible_above_larger_residual_containers() {
+        let (_temp, store) = indexed_fixture(
+            "D:\\",
+            &[
+                ("D:\\", true, 0),
+                ("D:\\Mixed", true, 0),
+                ("D:\\Mixed\\other.bin", false, 900),
+                ("D:\\Mixed\\One", true, 0),
+                ("D:\\Mixed\\One\\a.bin", false, 100),
+                ("D:\\Mixed\\Two", true, 0),
+                ("D:\\Mixed\\Two\\a.bin", false, 200),
+            ],
+            vec![
+                app("One App", "D:\\Mixed\\One"),
+                app("Two App", "D:\\Mixed\\Two"),
+            ],
+        );
+        let result = build(&store, "s").unwrap();
+        assert_eq!(
+            result.iter().map(|u| u.name.as_str()).collect::<Vec<_>>(),
+            ["Two App", "One App", "Mixed"]
+        );
+        assert_eq!(result.iter().map(|u| u.occupied_bytes).sum::<u64>(), 1200);
+        assert_eq!(result[2].occupied_bytes, 900);
+        assert!(result.iter().all(|u| u.children.is_empty()));
+    }
+
+    #[test]
+    fn portable_application_in_program_files_is_identified_but_stays_protected() {
+        let root = std::env::var("ProgramFiles").unwrap();
+        let app = format!("{root}\\FixturePortable");
+        let executable = format!("{app}\\app.exe");
+        let (_temp, store) = indexed_fixture(
+            &root,
+            &[(&root, true, 0), (&app, true, 0), (&executable, false, 80)],
+            vec![],
+        );
+        let result = build(&store, "s").unwrap();
+        assert_eq!(result[0].name, "FixturePortable");
+        assert_eq!(result[0].kind, "possible_application");
+        assert!(result[0].components[0].protected);
+        let policy = SafetyPolicy::new(Default::default());
+        let index = ApplicationIndex::for_scan(&store, "s", &policy).unwrap();
+        let file = store.by_path("s", &executable).unwrap();
+        let assessment = RuleSet::load(false)
+            .unwrap()
+            .classify_indexed(&file, &policy, &index);
+        assert_eq!(assessment.owner.as_deref(), Some("FixturePortable"));
+        assert_eq!(assessment.confidence, "low");
+        assert_eq!(assessment.risk, "protected");
     }
 
     #[test]
@@ -671,9 +740,10 @@ mod tests {
         assert_eq!(gpt.occupied_bytes, 344);
         assert_eq!(gpt.file_count, 2);
         assert_eq!(gpt.components[0].occupied_bytes, 270);
-        assert_eq!(gpt.children[0].name, "runtime");
-        assert_eq!(gpt.children[0].occupied_bytes, 74);
-        assert_eq!(gpt.children[0].kind, "possible_application");
+        assert!(gpt.children.is_empty());
+        assert_eq!(gpt.components[1].path, "D:\\Games\\GPT-SoVITS\\runtime");
+        assert_eq!(gpt.components[1].occupied_bytes, 74);
+        assert_eq!(gpt.kind, "possible_application");
         let filtered = page(&result, "runtime", 0, 100);
         assert_eq!(filtered.total, 1);
         assert_eq!(filtered.items[0].name, "GPT-SoVITS");
@@ -696,7 +766,88 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, "Bundle");
         assert_eq!(result[0].occupied_bytes, 74);
-        assert_eq!(result[0].children[0].name, "runtime");
+        assert!(result[0].children.is_empty());
+        assert_eq!(result[0].components[1].path, "D:\\Games\\Bundle\\runtime");
+    }
+
+    #[test]
+    fn vendor_data_alias_does_not_hide_an_independent_child_application() {
+        let root = std::env::var("LOCALAPPDATA").unwrap();
+        let vendor = format!("{root}\\Epic Games");
+        let shared = format!("{vendor}\\shared.bin");
+        let services = format!("{vendor}\\Epic Online Services");
+        let executable = format!("{services}\\service.exe");
+        let settings = format!("{services}\\settings.json");
+        let (_temp, store) = indexed_fixture(
+            &root,
+            &[
+                (&root, true, 0),
+                (&vendor, true, 0),
+                (&shared, false, 10),
+                (&services, true, 0),
+                (&executable, false, 20),
+                (&settings, false, 30),
+            ],
+            vec![app("Epic Games Launcher", "D:\\Installed\\Epic Games")],
+        );
+        let policy = SafetyPolicy::new(Default::default());
+        let index = ApplicationIndex::for_scan(&store, "s", &policy).unwrap();
+        assert!(index.origin(&normalize(&shared)).is_none());
+        let origin = index.origin(&normalize(&settings)).unwrap();
+        assert_eq!(origin.name, "Epic Online Services");
+        assert_eq!(origin.confidence, "low");
+        assert!(index
+            .installed_reason(&FileRecord {
+                path: "D:\\Installed\\Epic Games\\Launcher\\launcher.exe".into(),
+                ..Default::default()
+            })
+            .is_some());
+        let result = build_indexed(&store, "s", &policy, &index).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].name, "Epic Online Services");
+        assert_eq!(result[0].occupied_bytes, 50);
+        assert_eq!(result.iter().map(|u| u.occupied_bytes).sum::<u64>(), 60);
+        assert!(result.iter().all(|u| u.name != "Epic Games Launcher"));
+    }
+
+    #[test]
+    fn versioned_layout_names_use_recorded_context_without_merging_roots() {
+        let (_temp, store) = indexed_fixture(
+            "D:\\Apps",
+            &[
+                ("D:\\Apps", true, 0),
+                ("D:\\Apps\\AppCore", true, 0),
+                ("D:\\Apps\\AppCore\\1.0.0", true, 0),
+                ("D:\\Apps\\AppCore\\1.0.0\\app.exe", false, 10),
+                ("D:\\Apps\\AppCore\\2.0.0", true, 0),
+                ("D:\\Apps\\AppCore\\2.0.0\\app.exe", false, 20),
+                ("D:\\Apps\\AppCore\\Optimized", true, 0),
+                ("D:\\Apps\\AppCore\\Optimized\\app.exe", false, 30),
+            ],
+            vec![],
+        );
+        let policy = SafetyPolicy::new(Default::default());
+        let index = ApplicationIndex::for_scan(&store, "s", &policy).unwrap();
+        let result = build_indexed(&store, "s", &policy, &index).unwrap();
+        assert_eq!(result.len(), 3);
+        for (version, bytes) in [("1.0.0", 10), ("2.0.0", 20), ("Optimized", 30)] {
+            let path = format!("D:\\Apps\\AppCore\\{version}");
+            let normalized = normalize(&path);
+            let origin = index.origin(&normalized).unwrap();
+            assert_eq!(origin.path, normalized);
+            assert_eq!(
+                origin.application_key,
+                format!("possible_application:{normalized}")
+            );
+            let unit = result
+                .iter()
+                .find(|u| u.name == format!("AppCore / {version}"))
+                .unwrap();
+            assert_eq!(unit.confidence, "low");
+            assert_eq!(unit.components[0].path, path);
+            assert_eq!(unit.occupied_bytes, bytes);
+        }
+        assert_eq!(result.iter().map(|u| u.occupied_bytes).sum::<u64>(), 60);
     }
 
     #[test]

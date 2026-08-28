@@ -1,15 +1,19 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, FolderSearch, Search } from "lucide-react";
+import { FolderSearch, Search } from "lucide-react";
 import type { FileRecord, Scan, SuggestionPage } from "../lib/types";
 import { api } from "../lib/api";
 import { suggestionEmpty } from "../lib/emptyState";
 import EntryTable from "../components/EntryTable";
-import SuggestionGroups from "../components/SuggestionGroups";
+import AnalysisFilter from "../components/AnalysisFilter";
+import SuggestionGroups, {
+  SuggestionListHeader,
+} from "../components/SuggestionGroups";
 import "./suggestions.css";
 
 export default function SuggestionsPage({
   scan,
   revision,
+  analysisRevision,
   selected,
   queued,
   onSelect,
@@ -22,6 +26,7 @@ export default function SuggestionsPage({
 }: {
   scan: Scan;
   revision: number;
+  analysisRevision: string;
   selected: Set<number>;
   queued: Set<number>;
   onSelect: (file: FileRecord) => void;
@@ -36,6 +41,7 @@ export default function SuggestionsPage({
   const [group, setGroup] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [risk, setRisk] = useState("");
+  const [analysisStatus, setAnalysisStatus] = useState("");
   const [sort, setSort] = useState("size");
   const [page, setPage] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -54,12 +60,14 @@ export default function SuggestionsPage({
     group,
     search,
     risk,
+    analysisStatus,
     sort,
     offset: page * 100,
     limit: 100,
   };
   const key = JSON.stringify(query);
-  const requestKey = `${key}:${revision}`;
+  const filteredAnalysisRevision = analysisStatus ? analysisRevision : "";
+  const requestKey = `${key}:${revision}:${filteredAnalysisRevision}`;
   const current = useRef(requestKey);
   current.current = requestKey;
   const active = ["queued", "scanning", "aggregating"].includes(scan.status);
@@ -67,6 +75,7 @@ export default function SuggestionsPage({
     setGroup(null);
     setSearch("");
     setRisk("");
+    setAnalysisStatus("");
     setPage(0);
   }, [scan.id]);
   useEffect(() => {
@@ -78,7 +87,12 @@ export default function SuggestionsPage({
     const timer = setTimeout(() => {
       api<SuggestionPage>("cleanup_suggestions", { query: JSON.parse(key) })
         .then((value) => {
-          if (live) setData(value);
+          if (live) {
+            setPage((previous) =>
+              Math.min(previous, Math.max(0, Math.ceil(value.total / 100) - 1)),
+            );
+            setData(value);
+          }
         })
         .catch((error) => {
           if (live) {
@@ -94,10 +108,11 @@ export default function SuggestionsPage({
       live = false;
       clearTimeout(timer);
     };
-  }, [key, scan.status, revision, retry, onError]);
+  }, [key, scan.status, revision, filteredAnalysisRevision, retry, onError]);
   function clear() {
     setSearch("");
     setRisk("");
+    setAnalysisStatus("");
     setGroup(null);
     setPage(0);
   }
@@ -115,7 +130,7 @@ export default function SuggestionsPage({
       if (mounted.current) setSelecting(false);
     }
   }
-  const empty = suggestionEmpty(scan.status, risk, search);
+  const empty = suggestionEmpty(scan.status, risk, search, analysisStatus);
   const selectedGroup = data?.groups.find((item) => item.id === group);
   const filesShown = group !== null || search.length > 0;
   if (scan.status !== "complete")
@@ -139,7 +154,7 @@ export default function SuggestionsPage({
       <p className="suggestions-intro">
         按类别查找文件，勾选后添加到待清理清单。
       </p>
-      <div className="list-toolbar">
+      <div className="list-toolbar file-filters">
         <div className="search-box">
           <Search size={16} />
           <input
@@ -166,6 +181,13 @@ export default function SuggestionsPage({
           <option value="unknown">未识别用途</option>
           <option value="protected">仅看受保护项</option>
         </select>
+        <AnalysisFilter
+          value={analysisStatus}
+          onChange={(value) => {
+            setAnalysisStatus(value);
+            setPage(0);
+          }}
+        />
         <button onClick={onRescan}>重新扫描</button>
       </div>
       {risk === "protected" && (
@@ -190,55 +212,44 @@ export default function SuggestionsPage({
           </button>
         </div>
       )}
-      {group && (
-        <div className="suggestion-section-heading">
-          <button
-            onClick={() => {
-              setGroup(null);
-              setPage(0);
-            }}
-          >
-            <ArrowLeft size={15} />
-            返回分类
-          </button>
-          <strong>{selectedGroup?.name ?? "文件列表"}</strong>
-          <select
-            aria-label="建议排序"
-            value={sort}
-            onChange={(event) => setSort(event.target.value)}
-          >
-            <option value="size">按占用空间</option>
-            <option value="name">按路径</option>
-            <option value="activity">按最近变化</option>
-          </select>
-        </div>
-      )}
-      {selectedGroup && (
-        <div className="suggestion-details">
-          <p>{selectedGroup.purpose}</p>
-          <p>清理影响：{selectedGroup.consequence}</p>
-          {selectedGroup.recognized && risk !== "protected" && (
-            <div className="group-selection">
-              <span>请先关闭相关应用。每次最多选择 500 项。</span>
-              <button
-                disabled={selecting || busy || !data?.items.length}
-                onClick={() => onSelectMany(data?.items ?? [])}
-              >
-                选择本页文件
-              </button>
-              <button
-                disabled={selecting || busy || !data?.total || data.total > 500}
-                onClick={() => void selectGroup()}
-                title={
-                  data && data.total > 500
-                    ? "每次最多选择 500 项，请缩小搜索范围或按页选择"
-                    : undefined
+      {filesShown && (
+        <SuggestionListHeader
+          group={selectedGroup}
+          sort={sort}
+          onBack={
+            group
+              ? () => {
+                  setGroup(null);
+                  setPage(0);
                 }
-              >
-                {selecting ? "正在选择…" : "选择这一类"}
-              </button>
-            </div>
-          )}
+              : undefined
+          }
+          onSort={(value) => {
+            setSort(value);
+            setPage(0);
+          }}
+        />
+      )}
+      {selectedGroup?.recognized && risk !== "protected" && (
+        <div className="group-selection">
+          <span>请先关闭相关应用。每次最多选择 500 项。</span>
+          <button
+            disabled={selecting || busy || !data?.items.length}
+            onClick={() => onSelectMany(data?.items ?? [])}
+          >
+            选择本页文件
+          </button>
+          <button
+            disabled={selecting || busy || !data?.total || data.total > 500}
+            onClick={() => void selectGroup()}
+            title={
+              data && data.total > 500
+                ? "每次最多选择 500 项，请缩小搜索范围或按页选择"
+                : undefined
+            }
+          >
+            {selecting ? "正在选择…" : "选择这一类"}
+          </button>
         </div>
       )}
       {busy ? (
@@ -262,6 +273,8 @@ export default function SuggestionsPage({
         </div>
       ) : filesShown ? (
         <EntryTable
+          scanId={scan.id}
+          analysisRevision={analysisRevision}
           items={data.items}
           total={data.total}
           page={page}

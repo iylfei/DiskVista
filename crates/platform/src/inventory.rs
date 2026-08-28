@@ -24,45 +24,14 @@ pub fn installed_apps() -> Vec<InstalledApp> {
                 if name.trim().is_empty() {
                     continue;
                 }
-                let mut location = item
-                    .get_value::<String, _>("InstallLocation")
-                    .unwrap_or_default()
-                    .trim_matches('"')
-                    .to_owned();
-                if location.is_empty() {
-                    let icon = item
+                let location = install_location(
+                    &item
+                        .get_value::<String, _>("InstallLocation")
+                        .unwrap_or_default(),
+                    &item
                         .get_value::<String, _>("DisplayIcon")
-                        .unwrap_or_default();
-                    let exe = icon
-                        .trim_matches('"')
-                        .split(",")
-                        .next()
-                        .unwrap_or("")
-                        .trim_matches('"');
-                    if exe.to_lowercase().ends_with(".exe") {
-                        location = Path::new(exe)
-                            .parent()
-                            .map(|p| p.to_string_lossy().into_owned())
-                            .unwrap_or_default();
-                    }
-                }
-                if normalize(&location).len() <= 3 {
-                    let icon = item
-                        .get_value::<String, _>("DisplayIcon")
-                        .unwrap_or_default();
-                    let exe = icon
-                        .trim_matches('"')
-                        .split(',')
-                        .next()
-                        .unwrap_or("")
-                        .trim_matches('"');
-                    location =
-                        if exe.to_lowercase().ends_with(".exe") && Path::new(exe).is_absolute() {
-                            exe.into()
-                        } else {
-                            String::new()
-                        };
-                }
+                        .unwrap_or_default(),
+                );
                 apps.entry(format!("{}|{}", name.to_lowercase(), normalize(&location)))
                     .or_insert(InstalledApp {
                         id,
@@ -103,7 +72,7 @@ fn add_msix(apps: &mut BTreeMap<String, InstalledApp>) {
             .unwrap_or_default();
         let family = id.FamilyName().map(|s| s.to_string()).unwrap_or_default();
         apps.insert(
-            format!("msix:{family}"),
+            format!("msix:{family}|{}", normalize(&location)),
             InstalledApp {
                 id: family,
                 name,
@@ -255,7 +224,11 @@ fn add_epic(apps: &mut BTreeMap<String, InstalledApp>) {
             continue;
         }
         apps.insert(
-            format!("epic:{name}"),
+            format!(
+                "epic:{}|{}",
+                value["AppName"].as_str().unwrap_or(name),
+                normalize(location)
+            ),
             InstalledApp {
                 id: value["AppName"].as_str().unwrap_or(name).into(),
                 name: name.into(),
@@ -279,6 +252,67 @@ fn quoted_values(text: &str, key: &str) -> Vec<String> {
             }
         })
         .collect()
+}
+
+fn registry_path(value: &str) -> Option<String> {
+    let value = value.trim().trim_matches('"');
+    let mut result = String::new();
+    let mut rest = value;
+    while let Some(start) = rest.find('%') {
+        result.push_str(&rest[..start]);
+        let remaining = &rest[start + 1..];
+        let end = remaining.find('%')?;
+        result.push_str(&std::env::var(&remaining[..end]).ok()?);
+        rest = &remaining[end + 1..];
+    }
+    result.push_str(rest);
+    (Path::new(&result).is_absolute() && !result.starts_with("\\\\") && !result.contains('\0'))
+        .then_some(result)
+}
+
+fn icon_executable(value: &str) -> Option<String> {
+    let value = value.trim();
+    let path = if let Some(quoted) = value.strip_prefix('"') {
+        let end = quoted.find('"')?;
+        let suffix = quoted[end + 1..].trim();
+        if !suffix.is_empty()
+            && !suffix
+                .strip_prefix(',')
+                .is_some_and(|index| index.trim().parse::<i32>().is_ok())
+        {
+            return None;
+        }
+        &quoted[..end]
+    } else if let Some((path, index)) = value.rsplit_once(',') {
+        if index.trim().parse::<i32>().is_ok() {
+            path
+        } else {
+            value
+        }
+    } else {
+        value
+    };
+    let path = registry_path(path)?;
+    path.to_lowercase().ends_with(".exe").then_some(path)
+}
+
+fn install_location(location: &str, icon: &str) -> String {
+    let location = registry_path(location);
+    if let Some(location) = location.as_ref().filter(|path| normalize(path).len() > 3) {
+        return location.clone();
+    }
+    let Some(executable) = icon_executable(icon) else {
+        return String::new();
+    };
+    let parent = Path::new(&executable)
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if location.is_some() || normalize(&parent).len() <= 3 {
+        executable
+    } else {
+        parent
+    }
 }
 
 fn add_steam(apps: &mut BTreeMap<String, InstalledApp>) {
@@ -318,8 +352,13 @@ fn add_steam(apps: &mut BTreeMap<String, InstalledApp>) {
             if dir.contains("..") || dir.contains(':') || dir.starts_with(['/', '\\']) {
                 continue;
             }
+            let location = Path::new(&root)
+                .join("steamapps/common")
+                .join(dir)
+                .to_string_lossy()
+                .into_owned();
             apps.insert(
-                format!("steam:{name}"),
+                format!("steam:{name}|{}", normalize(&location)),
                 InstalledApp {
                     id: quoted_values(&text, "appid")
                         .first()
@@ -327,11 +366,7 @@ fn add_steam(apps: &mut BTreeMap<String, InstalledApp>) {
                         .unwrap_or_else(|| name.clone()),
                     name,
                     publisher: String::new(),
-                    install_location: Path::new(&root)
-                        .join("steamapps/common")
-                        .join(dir)
-                        .to_string_lossy()
-                        .into_owned(),
+                    install_location: location,
                     source: "Steam 应用清单".into(),
                     last_used: None,
                 },
@@ -406,5 +441,43 @@ pub fn last_access_policy() -> String {
         Some(v) if v & 1 != 0 => "NTFS 访问时间更新已禁用或由系统禁用；访问时间仅作弱参考".into(),
         Some(_) => "NTFS 访问时间更新开启，但可能延迟，且不等于用户实际使用".into(),
         None => "无法确定访问时间策略；仅作弱参考".into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_icon_parsing_preserves_quoted_commas_and_expands_environment_paths() {
+        assert_eq!(
+            icon_executable(r#""D:\Apps, data\Editor\editor.exe",-12"#).as_deref(),
+            Some(r"D:\Apps, data\Editor\editor.exe")
+        );
+        assert_eq!(
+            icon_executable(r"D:\Apps, data\Editor\editor.exe,0").as_deref(),
+            Some(r"D:\Apps, data\Editor\editor.exe")
+        );
+        assert_eq!(
+            install_location("", r#""D:\Apps, data\Editor\editor.exe",0"#),
+            r"D:\Apps, data\Editor"
+        );
+        let programs = std::env::var("ProgramFiles").unwrap();
+        assert_eq!(
+            install_location(r"%ProgramFiles%\Fixture App", ""),
+            format!("{programs}\\Fixture App")
+        );
+    }
+
+    #[test]
+    fn a_drive_root_icon_identifies_only_the_executable_and_commands_are_not_paths() {
+        assert_eq!(
+            install_location("D:\\", r#""D:\node.exe",0"#),
+            r"D:\node.exe"
+        );
+        assert_eq!(install_location("", r"D:\node.exe,0"), r"D:\node.exe");
+        assert!(icon_executable(r#""D:\app.exe" --repair"#).is_none());
+        assert!(icon_executable(r"D:\icons\app.ico,0").is_none());
+        assert!(icon_executable(r"relative\app.exe,0").is_none());
     }
 }

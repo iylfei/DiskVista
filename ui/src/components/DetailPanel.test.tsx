@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import DetailPanel from "./DetailPanel";
-import type { FileRecord } from "../lib/types";
+import AnalysisResultCard from "./AnalysisResultCard";
+import FileAnalysisBadge from "./FileAnalysisBadge";
+import type { AnalysisResult, AnalysisSummary, FileRecord } from "../lib/types";
 function file(risk = "review"): FileRecord {
   return {
     id: 1,
@@ -38,6 +40,91 @@ function file(risk = "review"): FileRecord {
   };
 }
 const noop = () => {};
+
+const summary: AnalysisSummary = {
+  analysisId: "analysis-one",
+  entryId: 1,
+  created: 1,
+  status: "success",
+  summary: "用途相似，请确认当前是否仍需保留",
+  historyMatchCount: 1,
+};
+
+describe("AI evidence and list summaries", () => {
+  it("only labels a valid history match as similar", () => {
+    const render = (result?: AnalysisSummary) =>
+      renderToStaticMarkup(<FileAnalysisBadge result={result} onOpen={noop} />);
+    expect(render()).toBe("");
+    expect(render(summary)).toContain("与删除历史相似");
+    expect(render({ ...summary, historyMatchCount: 0 })).not.toContain(
+      "与删除历史相似",
+    );
+    const stale = render({ ...summary, status: "stale" });
+    expect(stale).toContain("AI 已过期");
+    expect(stale).not.toContain("与删除历史相似");
+  });
+
+  it("shows stale reasons, readable evidence and the referenced history safely", () => {
+    const result: AnalysisResult = {
+      formatVersion: 3,
+      id: "analysis-one",
+      entryId: 1,
+      created: 1,
+      status: "stale",
+      message: "授权范围已变化",
+      promptTokens: null,
+      completionTokens: null,
+      includedContent: false,
+      assessment: {
+        deletionAdvice: "review",
+        reason: "可能是缓存；确认不再需要后再考虑删除。",
+        evidence: [],
+        historyMatches: [
+          { historyId: "history:old", reason: "同一应用的缓存目录" },
+        ],
+      },
+      evidenceDetails: [
+        { id: "local:0", source: "安装记录", detail: "关联到示例应用" },
+      ],
+      historyReferences: [
+        {
+          id: "history:old",
+          path: "<script>cache</script>",
+          bytes: 32,
+          recycledAt: 1,
+          owner: "示例应用",
+          category: "cache",
+          matchBasis: ["同一应用"],
+        },
+      ],
+    };
+    const html = renderToStaticMarkup(<AnalysisResultCard result={result} />);
+    expect(html).toContain("授权范围已变化");
+    expect(html).toContain("关联到示例应用");
+    expect(html).not.toContain("local:0");
+    expect(html).toContain("同一应用的缓存目录");
+    expect(html).not.toContain("<script>");
+    expect(html).toContain("&lt;script&gt;");
+    expect(html).toContain("不代表相似文件可以安全删除");
+    expect(html).not.toContain("<details open");
+    expect(html).not.toContain("待你确认：");
+    expect(html).not.toContain("模型自评置信度");
+    const batch = renderToStaticMarkup(
+      <AnalysisResultCard
+        result={{
+          ...result,
+          status: "success",
+          requestId: "batch-1",
+          requestItemCount: 12,
+          promptTokens: 1300,
+          completionTokens: 2500,
+        }}
+      />,
+    );
+    expect(batch).toContain("本批 12 项合计");
+    expect(batch).toContain("输入 1300 / 输出 2500 tokens");
+  });
+});
 describe("evidence panel safety", () => {
   it("escapes untrusted filenames", () => {
     const html = renderToStaticMarkup(
@@ -69,6 +156,64 @@ describe("evidence panel safety", () => {
     );
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>选择此项/);
     expect(html).toContain("Protected");
+  });
+  it("queues files and directories while retaining protection", () => {
+    for (const target of [
+      file(),
+      { ...file(), isDir: true },
+      file("protected"),
+      { ...file(), complete: false },
+    ]) {
+      const html = renderToStaticMarkup(
+        <DetailPanel
+          file={target}
+          scanId="s"
+          llmEnabled={false}
+          onClose={noop}
+          onSelect={noop}
+          onAddToBasket={noop}
+          onChanged={noop}
+          onError={noop}
+        />,
+      );
+      const action = [...html.matchAll(/<button\b[^>]*>[\s\S]*?<\/button>/g)]
+        .map(([button]) => button)
+        .find((button) => button.includes("加入待清理清单"));
+      expect(action).toBeDefined();
+      expect(action!.includes('disabled=""')).toBe(
+        target.assessment.risk === "protected" || !target.complete,
+      );
+      expect(html).toContain("选择此项");
+      expect(html).not.toContain("移入回收站");
+    }
+  });
+  it("disables repeated queue actions while adding or already queued", () => {
+    for (const state of [{ queued: true }, { addingToBasket: true }]) {
+      const html = renderToStaticMarkup(
+        <DetailPanel
+          file={file()}
+          scanId="s"
+          llmEnabled={false}
+          {...state}
+          onClose={noop}
+          onSelect={noop}
+          onAddToBasket={noop}
+          onChanged={noop}
+          onError={noop}
+        />,
+      );
+      const footer = html.match(/<footer>[\s\S]*?<\/footer>/)![0];
+      const buttons = [
+        ...footer.matchAll(/<button\b[^>]*>[\s\S]*?<\/button>/g),
+      ];
+      expect(buttons.length).toBe("queued" in state ? 1 : 2);
+      expect(buttons.every(([button]) => button.includes('disabled=""'))).toBe(
+        true,
+      );
+      expect(footer).toContain(
+        "queued" in state ? "已加入待清理清单" : "正在添加…",
+      );
+    }
   });
 });
 

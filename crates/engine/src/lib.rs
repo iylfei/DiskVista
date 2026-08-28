@@ -1,8 +1,12 @@
+pub mod analysis_filter;
 pub mod annotations;
 pub mod application_index;
+pub mod application_origins;
+pub mod classified_query;
 pub mod cleanup;
 pub mod context;
 pub mod directory_knowledge;
+pub mod history_context;
 pub mod incremental;
 pub mod rules;
 pub mod safety;

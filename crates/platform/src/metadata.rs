@@ -48,6 +48,47 @@ pub fn executable_evidence(path: &str) -> Result<Vec<Evidence>> {
                         ),
                     });
                 }
+                let translation_key = crate::wide("\\VarFileInfo\\Translation");
+                let mut translation_ptr = std::ptr::null_mut();
+                let mut translation_len = 0;
+                let mut translations = Vec::new();
+                if VerQueryValueW(
+                    bytes.as_ptr().cast(),
+                    PCWSTR(translation_key.as_ptr()),
+                    &mut translation_ptr,
+                    &mut translation_len,
+                )
+                .as_bool()
+                    && !translation_ptr.is_null()
+                    && (4..=256).contains(&translation_len)
+                {
+                    let pairs = std::slice::from_raw_parts(
+                        translation_ptr.cast::<u16>(),
+                        translation_len as usize / 2,
+                    );
+                    translations.extend(
+                        pairs
+                            .as_chunks::<2>()
+                            .0
+                            .iter()
+                            .map(|pair| (pair[0], pair[1])),
+                    );
+                }
+                translations.extend([(0x0409, 1200), (0x0409, 1252), (0x0804, 1200)]);
+                for (field, label) in [
+                    ("ProductName", "程序声明的产品名"),
+                    ("CompanyName", "程序声明的公司"),
+                    ("FileDescription", "程序声明的文件说明"),
+                ] {
+                    if let Some(value) = translations.iter().find_map(|&(language, code_page)| {
+                        version_string(&bytes, language, code_page, field)
+                    }) {
+                        evidence.push(Evidence {
+                            source: label.into(),
+                            detail: format!("{value}（版本资源中的自述信息，不是创建进程记录）"),
+                        });
+                    }
+                }
             }
         }
         let mut file = WINTRUST_FILE_INFO {
@@ -90,4 +131,52 @@ pub fn executable_evidence(path: &str) -> Result<Vec<Evidence>> {
         });
     }
     Ok(evidence)
+}
+
+unsafe fn version_string(
+    bytes: &[u8],
+    language: u16,
+    code_page: u16,
+    field: &str,
+) -> Option<String> {
+    let key = crate::wide(&format!(
+        "\\StringFileInfo\\{language:04x}{code_page:04x}\\{field}"
+    ));
+    let mut ptr = std::ptr::null_mut();
+    let mut len = 0;
+    if !VerQueryValueW(
+        bytes.as_ptr().cast(),
+        PCWSTR(key.as_ptr()),
+        &mut ptr,
+        &mut len,
+    )
+    .as_bool()
+        || ptr.is_null()
+        || !(1..=1024).contains(&len)
+    {
+        return None;
+    }
+    let chars = std::slice::from_raw_parts(ptr.cast::<u16>(), len as usize);
+    let end = chars.iter().position(|&c| c == 0).unwrap_or(chars.len());
+    let text = String::from_utf16_lossy(&chars[..end]).trim().to_owned();
+    (!text.is_empty() && !text.chars().any(char::is_control)).then_some(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_executable_exposes_declared_product_and_company_without_running_it() {
+        let system = std::env::var("SystemRoot").unwrap();
+        let evidence = executable_evidence(&format!("{system}\\System32\\cmd.exe")).unwrap();
+        for source in ["程序声明的产品名", "程序声明的公司"] {
+            assert!(
+                evidence
+                    .iter()
+                    .any(|item| item.source == source && item.detail.contains("不是创建进程记录")),
+                "{source}"
+            );
+        }
+    }
 }

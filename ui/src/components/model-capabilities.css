@@ -1,0 +1,46 @@
+.model-capabilities,
+.model-capabilities-unrecognized {
+  grid-column: 1 / -1;
+  min-width: 0;
+  font-size: 12px;
+}
+.model-capabilities {
+  display: grid;
+  gap: 7px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--soft);
+  overflow-wrap: anywhere;
+}
+.model-capabilities-heading,
+.model-capabilities-values,
+.model-capabilities-suggestion {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+}
+.model-capabilities-heading,
+.model-capabilities-suggestion {
+  justify-content: space-between;
+}
+.model-capabilities-provider {
+  margin-left: 8px;
+  color: var(--muted);
+}
+.model-capabilities small,
+.model-capabilities-note,
+.model-capabilities-warning,
+.model-capabilities-unrecognized {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.model-capabilities-warning {
+  color: var(--orange);
+}
+.model-capabilities-suggestion > button {
+  padding: 5px 9px;
+  font-size: 11px;
+}

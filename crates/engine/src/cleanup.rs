@@ -201,8 +201,13 @@ pub fn execute(
     {
         bail!("预览后设置或保护规则发生变化，请重新生成预览");
     }
-    let apps =
-        crate::application_index::ApplicationIndex::new(&inventory::installed_apps(), &policy);
+    let apps = crate::application_index::ApplicationIndex::with_snapshot(
+        store,
+        &preview.scan_id,
+        &inventory::installed_apps(),
+        &policy,
+    )?;
+    let rules = crate::rules::RuleSet::load(policy.settings.community_enabled)?;
     let batch = uuid::Uuid::new_v4().to_string();
     let mut history = Vec::new();
     let mut aborted = false;
@@ -217,6 +222,19 @@ pub fn execute(
             status: "skipped".into(),
             message: String::new(),
             free_space_delta: 0,
+            snapshot: store
+                .entry(&preview.scan_id, item.entry_id)
+                .ok()
+                .map(|mut file| {
+                    file.assessment = rules.classify_indexed(&file, &policy, &apps);
+                    HistoryEntrySnapshot {
+                        name: file.name,
+                        is_dir: file.is_dir,
+                        owner: file.assessment.owner,
+                        category: file.assessment.category,
+                        rule_id: file.assessment.rule_id,
+                    }
+                }),
         };
         if aborted || cancel.load(Ordering::Relaxed) || !item.allowed {
             record.message = if aborted {

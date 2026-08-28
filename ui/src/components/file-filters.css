@@ -1,0 +1,6 @@
+.file-filters {
+  flex-wrap: wrap;
+}
+.file-filters > .search-box {
+  flex-basis: 160px;
+}

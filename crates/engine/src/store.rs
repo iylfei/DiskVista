@@ -7,6 +7,8 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+mod analysis_usage;
+mod history_paging;
 mod retention;
 mod subtrees;
 
@@ -59,7 +61,9 @@ impl Store {
           CREATE INDEX IF NOT EXISTS scans_started ON scans(started DESC);
           CREATE TABLE IF NOT EXISTS analyses(id TEXT PRIMARY KEY,scan_id TEXT NOT NULL,entry_id INTEGER NOT NULL,created INTEGER NOT NULL,data TEXT NOT NULL);
           CREATE INDEX IF NOT EXISTS analyses_entry ON analyses(scan_id,entry_id,created DESC);
-          CREATE TABLE IF NOT EXISTS history(id TEXT PRIMARY KEY,time INTEGER NOT NULL,data TEXT NOT NULL);")?;
+          CREATE TABLE IF NOT EXISTS history(id TEXT PRIMARY KEY,time INTEGER NOT NULL,data TEXT NOT NULL);
+          CREATE INDEX IF NOT EXISTS history_time ON history(time DESC,id);")?;
+        s.discard_legacy_analyses()?;
         Ok(s)
     }
     pub fn connection(&self) -> Result<Connection> {
@@ -192,6 +196,7 @@ impl Store {
         )?)
     }
     pub fn query(&self, q: &EntryQuery) -> Result<EntryPage> {
+        anyhow::ensure!(q.analysis_status.is_empty(), "AI 分析筛选需要当前有效结果");
         let c = self.connection()?;
         let scan_root: Option<String> = c
             .query_row("SELECT root FROM scans WHERE id=?1", [&q.scan_id], |r| {
@@ -266,7 +271,8 @@ impl Store {
         )?;
         let sort = match q.sort.as_deref() {
             Some("name") => "path_key",
-            Some("activity") => "latest_change DESC",
+            Some("activity" | "activity_desc") => "latest_change DESC",
+            Some("activity_asc") => "latest_change ASC",
             _ => "logical DESC",
         };
         args.push(q.limit.clamp(1, 200).into());
@@ -424,17 +430,65 @@ impl Store {
             .collect();
         result
     }
+    pub fn recent_recycled_history(
+        &self,
+        since: i64,
+        until: i64,
+        limit: usize,
+    ) -> Result<Vec<HistoryItem>> {
+        let c = self.connection()?;
+        let mut statement = c.prepare("SELECT data FROM history WHERE time>=?1 AND time<=?2 AND json_extract(data,'$.status')='recycled' ORDER BY time DESC,id DESC LIMIT ?3")?;
+        let result = statement
+            .query_map(params![since, until, limit.min(200) as i64], |row| {
+                row.get::<_, String>(0)
+            })?
+            .map(|row| Ok(serde_json::from_str(&row?)?))
+            .collect();
+        result
+    }
+
+    pub fn analysis_candidate_pool(
+        &self,
+        scan: &str,
+        minimum_bytes: u64,
+    ) -> Result<Vec<FileRecord>> {
+        let root = self.require_finished(scan)?.root;
+        let c = self.connection()?;
+        let mut statement = c.prepare(&format!("SELECT {FIELDS} FROM entries WHERE scan_id=?1 AND is_dir=0 AND logical>?2 AND complete=1 AND blocked=0 AND path_key<>?3 ORDER BY logical DESC,id"))?;
+        let result = statement
+            .query_map(
+                params![
+                    scan,
+                    minimum_bytes.min(i64::MAX as u64) as i64,
+                    normalize(&root)
+                ],
+                decode,
+            )?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(result)
+    }
     pub fn save_analysis(&self, a: &AnalysisResult) -> Result<()> {
-        self.connection()?.execute(
-            "INSERT OR REPLACE INTO analyses VALUES(?1,?2,?3,?4,?5)",
-            params![
-                a.id,
-                a.scan_id,
-                a.entry_id,
-                a.created,
-                serde_json::to_string(a)?
-            ],
-        )?;
+        self.save_analyses(std::slice::from_ref(a))
+    }
+    pub fn save_analyses(&self, results: &[AnalysisResult]) -> Result<()> {
+        if results.is_empty() {
+            return Ok(());
+        }
+        let mut connection = self.connection()?;
+        let tx = connection.transaction()?;
+        for a in results {
+            tx.execute(
+                "INSERT OR REPLACE INTO analyses VALUES(?1,?2,?3,?4,?5)",
+                params![
+                    a.id,
+                    a.scan_id,
+                    a.entry_id,
+                    a.created,
+                    serde_json::to_string(a)?
+                ],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
     pub fn analyses(&self, scan: &str, id: i64) -> Result<Vec<AnalysisResult>> {
@@ -445,6 +499,36 @@ impl Store {
             .map(|v| Ok(serde_json::from_str(&v?)?))
             .collect();
         result
+    }
+    pub fn analyses_for_entries(&self, scan: &str, ids: &[i64]) -> Result<Vec<AnalysisResult>> {
+        anyhow::ensure!(ids.len() <= 200, "每次最多查询 200 项 AI 摘要");
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let c = self.connection()?;
+        let placeholders = std::iter::repeat_n("?", ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!("SELECT data FROM (SELECT entry_id,created,id,data,ROW_NUMBER() OVER(PARTITION BY entry_id ORDER BY created DESC,id DESC) AS rank FROM analyses WHERE scan_id=? AND entry_id IN ({placeholders})) WHERE rank<=10 ORDER BY entry_id,created DESC,id DESC");
+        let mut args: Vec<rusqlite::types::Value> = vec![scan.to_owned().into()];
+        args.extend(ids.iter().copied().map(Into::into));
+        let mut statement = c.prepare(&sql)?;
+        let result = statement
+            .query_map(rusqlite::params_from_iter(args), |row| {
+                row.get::<_, String>(0)
+            })?
+            .map(|row| Ok(serde_json::from_str(&row?)?))
+            .collect();
+        result
+    }
+    pub fn analysis_entry_ids(&self, scan: &str) -> Result<Vec<i64>> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare("SELECT DISTINCT entry_id FROM analyses WHERE scan_id=? ORDER BY entry_id")?;
+        let ids = statement
+            .query_map([scan], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(ids)
     }
     pub fn recover_interrupted(&self) -> Result<()> {
         let c = self.connection()?;

@@ -2,7 +2,15 @@ import { useState } from "react";
 import type { Settings } from "../lib/types";
 import { api } from "../lib/api";
 import HelpTip from "../components/HelpTip";
+import ModelCapabilities from "../components/ModelCapabilities";
 import { helpText } from "../lib/helpText";
+import {
+  DEFAULT_MAX_OUTPUT_TOKENS,
+  MAX_OUTPUT_TOKENS_LIMIT,
+  OUTPUT_TOKENS_ERROR,
+  parseMaxOutputTokens,
+  settingsWithOutputLimit,
+} from "../lib/settingsValidation";
 export default function SettingsPage({
   settings,
   hasKey,
@@ -14,29 +22,47 @@ export default function SettingsPage({
   onSave: (s: Settings) => void;
   onError: (e: unknown) => void;
 }) {
-  const [draft, setDraft] = useState<Settings>(structuredClone(settings));
+  const [draft, setDraft] = useState<Settings>(() => {
+    const value = structuredClone(settings);
+    value.llm.maxOutputTokens ??= DEFAULT_MAX_OUTPUT_TOKENS;
+    return value;
+  });
+  const [outputTokens, setOutputTokens] = useState(
+    String(settings.llm.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS),
+  );
   const [key, setKey] = useState("");
   const [pending, setPending] = useState<"save" | "test" | null>(null);
   const busy = pending !== null;
   const [note, setNote] = useState("");
   const [testError, setTestError] = useState("");
+  const outputLimitDisabled = draft.llm.tokenParameter === "none";
+  const outputLimitInvalid =
+    !outputLimitDisabled && parseMaxOutputTokens(outputTokens) === null;
   const llm = (change: Partial<Settings["llm"]>) =>
     setDraft((s) => ({ ...s, llm: { ...s.llm, ...change } }));
+  function acceptSaved(saved: Settings) {
+    setDraft(saved);
+    setOutputTokens(
+      String(saved.llm.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS),
+    );
+    onSave(saved);
+  }
   async function save() {
     setPending("save");
     setNote("");
     setTestError("");
     try {
       const saved = await api<Settings>("save_settings", {
-        settings: draft,
+        settings: settingsWithOutputLimit(draft, outputTokens),
         key: key || null,
       });
       setKey("");
-      setDraft(saved);
-      onSave(saved);
+      acceptSaved(saved);
       setNote(
-        draft.llm.metadataConsent && !saved.llm.metadataConsent
-          ? "设置已保存。服务地址已更改，自动发送授权已重置，请重新检查并授权。"
+        (draft.llm.metadataConsent && !saved.llm.metadataConsent) ||
+          (draft.llm.historyReferenceEnabled &&
+            !saved.llm.historyReferenceEnabled)
+          ? "设置已保存。服务地址已更改，自动发送与历史参考授权已重置，请重新检查并授权。"
           : "设置已保存；密钥只存入 Windows 凭据管理器。",
       );
     } catch (e) {
@@ -108,7 +134,7 @@ export default function SettingsPage({
           <div>
             <h2>可选 AI 分析</h2>
             <p>
-              让 AI 帮忙解释用途不明的文件。是否启用由你决定，它不会操作文件。
+              让 AI 提供删除建议与简短理由。是否启用由你决定，它不会操作文件。
             </p>
           </div>
           <label className="toggle">
@@ -155,6 +181,17 @@ export default function SettingsPage({
               onChange={(e) => llm({ model: e.target.value })}
             />
           </label>
+          <ModelCapabilities
+            baseUrl={draft.llm.baseUrl}
+            modelId={draft.llm.model}
+            outputTokens={outputTokens}
+            tokenParameter={draft.llm.tokenParameter}
+            disabled={busy}
+            onUseSuggestion={(value) => {
+              setOutputTokens(String(value.maxOutputTokens));
+              llm(value);
+            }}
+          />
           <label htmlFor="ai-key">
             <span>
               API 密钥
@@ -208,6 +245,40 @@ export default function SettingsPage({
               <option value="none">不发送长度参数</option>
             </select>
           </label>
+          <label htmlFor="ai-output-token-limit">
+            <span>
+              单次输出上限（token）
+              <HelpTip label="单次输出上限" text={helpText.maxOutputTokens} />
+            </span>
+            <input
+              id="ai-output-token-limit"
+              aria-label="单次输出上限（token）"
+              aria-describedby="ai-output-token-help"
+              aria-invalid={outputLimitInvalid || undefined}
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={MAX_OUTPUT_TOKENS_LIMIT}
+              step={1}
+              disabled={outputLimitDisabled}
+              value={outputTokens}
+              onChange={(e) => {
+                setOutputTokens(e.target.value);
+                const value = parseMaxOutputTokens(e.target.value);
+                if (value !== null) llm({ maxOutputTokens: value });
+              }}
+            />
+            <small id="ai-output-token-help">
+              {outputLimitDisabled && "当前不发送此数值。"}
+              这是单次请求的生成预算；服务支持的最大输出需单独确认，1M
+              上下文不等于输出上限。
+            </small>
+            {outputLimitInvalid && (
+              <small className="warning-text" role="alert">
+                {OUTPUT_TOKENS_ERROR}
+              </small>
+            )}
+          </label>
           <label htmlFor="ai-timeout">
             <span>
               请求超时（秒）
@@ -224,34 +295,6 @@ export default function SettingsPage({
             />
           </label>
         </div>
-        <div className="privacy-note">
-          <strong>哪些信息会发送给 AI</strong>
-          <p>
-            默认只发送部分文件名、文件夹结构、大小、时间和判断依据，不包含文件正文。用户名会被替换，但文件名仍可能透露隐私。读取正文需要你另行同意，密码、钱包等敏感文件不允许读取正文。
-          </p>
-        </div>
-        <label className="check-line">
-          <input
-            type="checkbox"
-            checked={draft.llm.automatic}
-            onChange={(e) => llm({ automatic: e.target.checked })}
-          />
-          扫描完成后，自动分析未识别的大型项目
-        </label>
-        <p className="muted">分析结果可在对应文件详情的“AI 辅助解释”中查看。</p>
-        <label className="check-line" htmlFor="ai-metadata-consent">
-          <input
-            id="ai-metadata-consent"
-            aria-label="允许自动发送上述脱敏元数据（不含文件正文）"
-            type="checkbox"
-            checked={draft.llm.metadataConsent}
-            onChange={(e) => llm({ metadataConsent: e.target.checked })}
-          />
-          <span>
-            我允许自动模式发送上述基本信息（脱敏元数据，不含文件正文）
-            <HelpTip label="脱敏元数据" text={helpText.metadata} />
-          </span>
-        </label>
         <div className="form-grid three">
           <label htmlFor="ai-minimum-size">
             <span>
@@ -262,12 +305,13 @@ export default function SettingsPage({
               id="ai-minimum-size"
               aria-label="自动分析门槛（MiB）"
               type="number"
-              min={1}
+              min={100}
               value={draft.llm.minimumBytes / 1048576}
               onChange={(e) =>
                 llm({ minimumBytes: Number(e.target.value) * 1048576 })
               }
             />
+            <small>最低按 100 MiB 生效，只分析严格大于门槛的文件。</small>
           </label>
           <label htmlFor="ai-request-limit">
             <span>
@@ -303,11 +347,57 @@ export default function SettingsPage({
         <p className="muted">
           重试也计入请求上限。没有服务商提供的用量或价格时，不估算费用。
         </p>
+        <div className="privacy-note">
+          <strong>哪些信息会发送给 AI</strong>
+          <p>
+            默认只发送部分文件名、文件夹结构、大小、时间和判断依据，不包含文件正文。用户名会被替换，但文件名仍可能透露隐私。读取正文需要你另行同意，密码、钱包等敏感文件不允许读取正文。
+          </p>
+        </div>
+        <label className="check-line">
+          <input
+            type="checkbox"
+            checked={draft.llm.automatic}
+            onChange={(e) => llm({ automatic: e.target.checked })}
+          />
+          扫描完成后，自动分析来源未明确的大文件
+        </label>
+        <p className="muted">
+          只分析超过门槛的文件，不包含目录或已明确所属应用的文件。按目录分批分析，每个文件给出删除建议与简短理由。
+        </p>
+        <label className="check-line" htmlFor="ai-metadata-consent">
+          <input
+            id="ai-metadata-consent"
+            aria-label="允许自动发送上述脱敏元数据（不含文件正文）"
+            type="checkbox"
+            checked={draft.llm.metadataConsent}
+            onChange={(e) => llm({ metadataConsent: e.target.checked })}
+          />
+          <span>
+            我允许自动模式发送上述基本信息（脱敏元数据，不含文件正文）
+            <HelpTip label="脱敏元数据" text={helpText.metadata} />
+          </span>
+        </label>
+        <label className="check-line" htmlFor="ai-history-reference">
+          <input
+            id="ai-history-reference"
+            type="checkbox"
+            checked={draft.llm.historyReferenceEnabled ?? false}
+            onChange={(e) => llm({ historyReferenceEnabled: e.target.checked })}
+          />
+          <span>
+            允许分析时参考并发送相关回收历史
+            <HelpTip label="回收历史参考" text={helpText.historyReference} />
+          </span>
+        </label>
+        <p className="muted">
+          仅从本软件近 180 天成功回收的记录中挑选，每个文件最多 6
+          条。历史只作参考，不扩大分析范围。会发送脱敏路径、大小、回收时间及已有的应用归属，不包含文件正文；失败或取消的操作不参与。关闭后不再发送，更改服务地址后需重新开启。
+        </p>
         <div className="actions">
           <button
             disabled={busy}
             onClick={test}
-            title="仅发送固定测试消息，不发送文件信息"
+            title="仅发送固定轻量测试消息（128 token 输出预算），不发送文件信息；不会验证单次输出上限"
           >
             {pending === "test" ? "正在测试…" : "测试连接"}
           </button>
@@ -375,8 +465,7 @@ export default function SettingsPage({
                   },
                   key: null,
                 });
-                setDraft(saved);
-                onSave(saved);
+                acceptSaved(saved);
                 setNote("保护设置已保存");
               } catch (e) {
                 onError(e);
@@ -399,8 +488,7 @@ export default function SettingsPage({
                   key: "",
                 });
                 setKey("");
-                setDraft(saved);
-                onSave(saved);
+                acceptSaved(saved);
                 setNote("密钥已从 Windows 凭据存储移除");
               } catch (e) {
                 onError(e);

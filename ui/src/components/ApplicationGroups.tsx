@@ -7,6 +7,10 @@ const categoryName = (value: string) =>
     temporary: "临时数据",
     diagnostic: "诊断记录",
     cache: "可再生成缓存",
+    application_data: "应用数据",
+    application_container: "应用文件夹",
+    application: "应用程序",
+    system: "Windows 系统",
     protected: "受保护内容",
     unknown: "用途未知",
   })[value] ?? value;

@@ -8,7 +8,8 @@ export function analysisStatus(
   if (active)
     return {
       label: "AI 分析中",
-      description: "结果会显示在对应文件详情的“AI 辅助解释”中。",
+      description:
+        "完成后可按“AI 已分析”筛选，每个文件查看删除建议与简短理由。",
       attention: false,
       action: "analyze" as const,
       disabled: true,
@@ -35,7 +36,7 @@ export function analysisStatus(
       ? "请先扫描一个位置。"
       : scan.status !== "complete"
         ? "请先完成扫描，再分析扫描结果。"
-        : "发送当前扫描中符合门槛的未识别项目的基本信息进行分析，结果在文件详情中查看。",
+        : "按目录分批分析来源未明确的大文件，文件须严格大于门槛（最低 100 MiB）；每项提供删除建议与简短理由。",
     attention: false,
     action: "analyze" as const,
     disabled: scan?.status !== "complete",

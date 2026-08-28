@@ -7,6 +7,7 @@ struct Key {
     risk: String,
     group: Option<String>,
     sort: String,
+    analysis: Option<AnalysisFilter>,
 }
 pub(super) struct View {
     key: Key,
@@ -24,7 +25,11 @@ fn matches(index: &SuggestionIndex, file: &Candidate, key: &Key) -> bool {
         "known" => allowed && (a.rule_id.is_some() || a.owner.is_some()),
         _ => allowed,
     };
-    risk && (key.search.is_empty() || file.key.contains(&key.search))
+    risk && key
+        .analysis
+        .as_ref()
+        .is_none_or(|filter| filter.matches(file.id))
+        && (key.search.is_empty() || file.key.contains(&key.search))
 }
 
 fn build_view(index: &SuggestionIndex, key: Key) -> View {
@@ -57,8 +62,9 @@ fn build_view(index: &SuggestionIndex, key: Key) -> View {
     }
     groups.retain(|g| g.count > 0);
     groups.sort_by(|a, b| {
-        b.recognized
-            .cmp(&a.recognized)
+        (b.id == "large-files")
+            .cmp(&(a.id == "large-files"))
+            .then(b.recognized.cmp(&a.recognized))
             .then(b.occupied_bytes.cmp(&a.occupied_bytes))
             .then(a.name.cmp(&b.name))
     });
@@ -75,7 +81,8 @@ fn build_view(index: &SuggestionIndex, key: Key) -> View {
         let (a, b) = (&index.entries[a], &index.entries[b]);
         let order = match key.sort.as_str() {
             "name" => a.path.cmp(&b.path),
-            "activity" => b.latest_change.cmp(&a.latest_change),
+            "activity" | "activity_desc" => b.latest_change.cmp(&a.latest_change),
+            "activity_asc" => a.latest_change.cmp(&b.latest_change),
             _ => b.occupied.cmp(&a.occupied),
         };
         order.then(a.id.cmp(&b.id))
@@ -90,6 +97,7 @@ fn build_view(index: &SuggestionIndex, key: Key) -> View {
 fn with_view<T>(
     index: &SuggestionIndex,
     query: &SuggestionQuery,
+    analysis: Option<&AnalysisFilter>,
     read: impl FnOnce(&View) -> T,
 ) -> T {
     let key = Key {
@@ -97,6 +105,7 @@ fn with_view<T>(
         risk: query.risk.clone(),
         group: query.group.clone(),
         sort: query.sort.clone(),
+        analysis: analysis.cloned(),
     };
     let mut cache = index.views.lock().unwrap();
     if let Some(position) = cache.iter().position(|v| v.key == key) {
@@ -112,7 +121,16 @@ fn with_view<T>(
 }
 
 pub fn page(index: &SuggestionIndex, query: &SuggestionQuery) -> Result<SuggestionPage> {
-    let (groups, total, selected) = with_view(index, query, |view| {
+    page_with_analysis(index, query, None)
+}
+
+pub fn page_with_analysis(
+    index: &SuggestionIndex,
+    query: &SuggestionQuery,
+    analysis: Option<&AnalysisFilter>,
+) -> Result<SuggestionPage> {
+    AnalysisFilter::validate(&query.analysis_status, analysis)?;
+    let (groups, total, selected) = with_view(index, query, analysis, |view| {
         (
             view.groups.clone(),
             view.indices.len(),
@@ -132,6 +150,15 @@ pub fn page(index: &SuggestionIndex, query: &SuggestionQuery) -> Result<Suggesti
 }
 
 pub fn selection(index: &SuggestionIndex, query: &SuggestionQuery) -> Result<Vec<FileRecord>> {
+    selection_with_analysis(index, query, None)
+}
+
+pub fn selection_with_analysis(
+    index: &SuggestionIndex,
+    query: &SuggestionQuery,
+    analysis: Option<&AnalysisFilter>,
+) -> Result<Vec<FileRecord>> {
+    AnalysisFilter::validate(&query.analysis_status, analysis)?;
     if !query
         .group
         .as_ref()
@@ -139,7 +166,7 @@ pub fn selection(index: &SuggestionIndex, query: &SuggestionQuery) -> Result<Vec
     {
         bail!("请逐项选择用途未识别的大文件");
     }
-    let selected: Vec<_> = with_view(index, query, |view| {
+    let selected: Vec<_> = with_view(index, query, analysis, |view| {
         view.indices
             .iter()
             .copied()

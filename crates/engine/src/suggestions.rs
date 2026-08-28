@@ -1,20 +1,23 @@
 mod query;
+mod seeds;
 
 use crate::{
+    analysis_filter::AnalysisFilter,
     application_index::ApplicationIndex,
+    classified_query::Classifier,
     rules::RuleSet,
     safety::SafetyPolicy,
     store::{decode, Store, FIELDS},
 };
 use anyhow::Result;
 use cleaner_domain::*;
-use cleaner_platform::{normalize, within};
+use cleaner_platform::normalize;
 use std::{
     collections::{HashMap, VecDeque},
     sync::Mutex,
 };
 
-pub use query::{page, selection};
+pub use query::{page, page_with_analysis, selection, selection_with_analysis};
 
 struct Candidate {
     id: i64,
@@ -35,6 +38,8 @@ pub struct SuggestionIndex {
     assessments: Vec<Assessment>,
     groups: Vec<SuggestionGroup>,
     views: Mutex<VecDeque<query::View>>,
+    started: i64,
+    valid_until: Option<i64>,
 }
 
 impl SuggestionIndex {
@@ -51,6 +56,8 @@ impl SuggestionIndex {
             assessments: vec![],
             groups: vec![],
             views: Mutex::new(VecDeque::new()),
+            started: chrono::Utc::now().timestamp(),
+            valid_until: None,
         };
         let mut assessments = HashMap::new();
         let mut groups = HashMap::new();
@@ -109,6 +116,14 @@ impl SuggestionIndex {
         Ok(index)
     }
 
+    pub fn is_current(&self) -> bool {
+        self.valid_at(chrono::Utc::now().timestamp())
+    }
+
+    fn valid_at(&self, now: i64) -> bool {
+        now >= self.started && self.valid_until.is_none_or(|until| now < until)
+    }
+
     fn load(&self, selected: &[usize]) -> Result<Vec<FileRecord>> {
         let c = self.store.connection()?;
         let mut statement = c.prepare_cached(&format!(
@@ -128,19 +143,37 @@ impl SuggestionIndex {
 }
 
 pub fn build(store: &Store, scan_id: &str) -> Result<SuggestionIndex> {
+    let policy = SafetyPolicy::new(store.settings()?);
+    let apps = ApplicationIndex::for_scan(store, scan_id, &policy)?;
+    build_indexed(store, scan_id, &policy, &apps)
+}
+
+pub fn build_indexed(
+    store: &Store,
+    scan_id: &str,
+    policy: &SafetyPolicy,
+    apps: &ApplicationIndex,
+) -> Result<SuggestionIndex> {
+    let rules = RuleSet::load(policy.settings.community_enabled)?;
+    build_with_rules(store, scan_id, policy, apps, &rules)
+}
+
+fn build_with_rules(
+    store: &Store,
+    scan_id: &str,
+    policy: &SafetyPolicy,
+    apps: &ApplicationIndex,
+    rules: &RuleSet,
+) -> Result<SuggestionIndex> {
     let scan = store.require_finished(scan_id)?;
+    let started = chrono::Utc::now().timestamp();
+    let classifier = Classifier::new(&scan, rules, policy, apps);
+    let mut valid_until = None;
     let root = normalize(&scan.root);
-    let settings = store.settings()?;
-    let rules = RuleSet::load(settings.community_enabled)?;
-    let policy = SafetyPolicy::new(settings);
-    let apps = ApplicationIndex::new(&store.apps(scan_id)?, &policy);
     let c = store.connection()?;
-    // Disjoint ranges allow partial indexes even when a snapshot has no candidates.
-    let mut statement = c.prepare(&format!(
-        "SELECT {FIELDS} FROM entries WHERE scan_id=?1 AND rule_id IS NOT NULL
-         UNION ALL SELECT {FIELDS} FROM entries WHERE scan_id=?1 AND rule_id IS NULL AND is_dir=0 AND logical>=104857600"
-    ))?;
-    let files = statement.query_map([scan_id], decode)?;
+    let (sql, parameters) = seeds::query(scan_id, &root, rules);
+    let mut statement = c.prepare(&sql)?;
+    let files = statement.query_map(rusqlite::params_from_iter(parameters), decode)?;
     let names = rules
         .rules
         .iter()
@@ -149,23 +182,10 @@ pub fn build(store: &Store, scan_id: &str) -> Result<SuggestionIndex> {
     let records = files
         .map(|file| -> Result<FileRecord> {
             let mut file = file?;
-            file.assessment = rules.classify_indexed(&file, &policy, &apps);
-            let protected_descendant = file.is_dir
-                && policy
-                    .settings
-                    .protected_paths
-                    .iter()
-                    .chain(&policy.settings.ignored_paths)
-                    .any(|path| within(path, &file.path));
-            if normalize(&file.path) == root
-                || !file.complete
-                || file.has_blocked_children
-                || protected_descendant
-            {
-                file.assessment.risk = "protected".into();
-                file.assessment.protected_reason =
-                    Some("扫描起点、未能扫描完整或包含受保护内容，不能整体清理".into());
+            if let Some(next) = classifier.next_change(&file, started) {
+                valid_until = Some(valid_until.map_or(next, |old: i64| old.min(next)));
             }
+            classifier.apply(&mut file);
             Ok(file)
         })
         .filter(|file| match file {
@@ -174,7 +194,10 @@ pub fn build(store: &Store, scan_id: &str) -> Result<SuggestionIndex> {
             }
             Err(_) => true,
         });
-    SuggestionIndex::from_records(store, scan_id, names, records)
+    let mut index = SuggestionIndex::from_records(store, scan_id, names, records)?;
+    index.started = started;
+    index.valid_until = valid_until;
+    Ok(index)
 }
 
 #[cfg(test)]

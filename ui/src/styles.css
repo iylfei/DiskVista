@@ -522,7 +522,7 @@ code {
   display: grid;
   grid-template-columns:
     24px minmax(170px, 2.3fr) minmax(100px, 1fr) minmax(100px, 1.3fr)
-    minmax(105px, 1fr) 25px;
+    minmax(105px, 1fr) var(--file-actions-width, 25px);
   gap: 12px;
   align-items: center;
   padding: 0 13px;
@@ -967,11 +967,14 @@ label {
   color: #7a8792;
 }
 .detail-panel > footer {
+  display: flex;
+  gap: 8px;
   padding: 12px 20px;
   border-top: 1px solid var(--line);
 }
 .detail-panel > footer button {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
 }
 details > summary {
   cursor: pointer;
@@ -1208,7 +1211,7 @@ details > p.muted {
     gap: 8px;
     grid-template-columns:
       20px minmax(145px, 2fr) 90px minmax(85px, 1fr)
-      103px 18px;
+      103px var(--file-actions-width, 18px);
   }
   .table-scroll {
     height: 300px;

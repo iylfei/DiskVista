@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "./api";
 import { sameSnapshot, startScanPolling } from "./scanPolling";
 import { startAnalysisPolling } from "./analysisPolling";
-import type { RuntimeStatus } from "./types";
+import { startAnalysisSummaryLoad } from "./analysisSummaries";
+import { mergeFileDetail, startFileDetailLoad } from "./fileDetail";
+import type { FileRecord, RuntimeStatus } from "./types";
 
 vi.mock("./api", () => ({ api: vi.fn() }));
 const status = {
@@ -38,6 +40,164 @@ beforeEach(() => {
 afterEach(() => {
   vi.clearAllTimers();
   vi.useRealTimers();
+});
+
+describe("file detail response merging", () => {
+  const target = { scanId: "original-scan", entryId: 1 };
+  const original = { id: 1, name: "original" } as FileRecord;
+  const full = { ...original, name: "full detail" };
+
+  it("updates the file that is still open in the requested scan", () => {
+    expect(mergeFileDetail(original, target.scanId, target, full)).toBe(full);
+  });
+
+  it("does not reopen a closed detail panel after a delayed response", () => {
+    expect(mergeFileDetail(null, target.scanId, target, full)).toBeNull();
+  });
+
+  it("does not replace a different file selected while loading", () => {
+    const current = { ...original, id: 2 };
+    expect(mergeFileDetail(current, target.scanId, target, full)).toBe(current);
+  });
+
+  it("ignores the previous scan even when its entry id is reused", () => {
+    const current = { ...original, name: "another scan" };
+    expect(mergeFileDetail(current, "new-scan", target, full)).toBe(current);
+    expect(mergeFileDetail(null, null, target, full)).toBeNull();
+  });
+
+  it("does not accept a response for a different entry", () => {
+    expect(
+      mergeFileDetail(original, target.scanId, target, { ...full, id: 2 }),
+    ).toBe(original);
+  });
+});
+
+describe("application file detail loading", () => {
+  it("only opens the latest requested file when responses arrive out of order", async () => {
+    let resolveFirst!: (file: FileRecord) => void;
+    const first = { id: 1 } as FileRecord;
+    const latest = { id: 2 } as FileRecord;
+    vi.mocked(api)
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveFirst = resolve;
+        }),
+      )
+      .mockResolvedValueOnce(latest);
+    const onResult = vi.fn();
+    const onError = vi.fn();
+    const cancel = startFileDetailLoad({
+      scanId: "s",
+      entryId: first.id,
+      onResult,
+      onError,
+    });
+    cancel();
+    startFileDetailLoad({
+      scanId: "s",
+      entryId: latest.id,
+      onResult,
+      onError,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    resolveFirst(first);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onResult).toHaveBeenCalledTimes(1);
+    expect(onResult).toHaveBeenCalledWith(latest);
+    expect(api).toHaveBeenCalledTimes(2);
+    expect(api).toHaveBeenLastCalledWith("entry_detail", {
+      scanId: "s",
+      entryId: latest.id,
+    });
+  });
+
+  it("ignores a response after leaving the scan or application page", async () => {
+    let resolve!: (file: FileRecord) => void;
+    vi.mocked(api).mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    const onResult = vi.fn();
+    const cancel = startFileDetailLoad({
+      scanId: "old-scan",
+      entryId: 1,
+      onResult,
+      onError: vi.fn(),
+    });
+    cancel();
+    resolve({ id: 1 } as FileRecord);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onResult).not.toHaveBeenCalled();
+  });
+
+  it("reports active failures but suppresses errors from cancelled inspections", async () => {
+    const error = new Error("detail read failed");
+    vi.mocked(api).mockRejectedValue(error);
+    const onError = vi.fn();
+    const options = {
+      scanId: "s",
+      entryId: 1,
+      onResult: vi.fn(),
+      onError,
+    };
+    const cancel = startFileDetailLoad(options);
+    cancel();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onError).not.toHaveBeenCalled();
+    startFileDetailLoad(options);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onError).toHaveBeenCalledWith(error);
+  });
+});
+
+describe("file analysis summary loading", () => {
+  it("loads a page in one batch and skips empty pages", async () => {
+    vi.mocked(api).mockResolvedValue([]);
+    const onResults = vi.fn();
+    startAnalysisSummaryLoad({
+      scanId: "s",
+      entryIds: [1, 2, 2, 3],
+      onResults,
+      onError: vi.fn(),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api).toHaveBeenCalledTimes(1);
+    expect(api).toHaveBeenCalledWith("analysis_summaries", {
+      scanId: "s",
+      entryIds: [1, 2, 3],
+    });
+    startAnalysisSummaryLoad({
+      scanId: "s",
+      entryIds: [],
+      onResults,
+      onError: vi.fn(),
+    });
+    expect(api).toHaveBeenCalledTimes(1);
+    expect(onResults).toHaveBeenLastCalledWith([]);
+  });
+
+  it("ignores a response after switching the scan or page", async () => {
+    let resolve!: (value: unknown[]) => void;
+    vi.mocked(api).mockReturnValue(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    const onResults = vi.fn();
+    const stop = startAnalysisSummaryLoad({
+      scanId: "old",
+      entryIds: [1],
+      onResults,
+      onError: vi.fn(),
+    });
+    stop();
+    resolve([{ entryId: 1 }]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onResults).not.toHaveBeenCalled();
+  });
 });
 
 describe("analysis result polling", () => {

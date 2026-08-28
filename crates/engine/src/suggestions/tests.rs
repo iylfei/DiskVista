@@ -11,6 +11,7 @@ fn file(
     FileRecord {
         id,
         path: path.into(),
+        parent: path.rsplit_once('\\').map(|(p, _)| p).unwrap_or("").into(),
         name: path.rsplit('\\').next().unwrap().into(),
         logical_bytes: size,
         allocated_bytes: Some(size),
@@ -59,9 +60,23 @@ fn query() -> SuggestionQuery {
 #[test]
 fn groups_collapse_nested_files_and_preserve_size_and_purpose() {
     let data = index(vec![
-        file(1, "D:\\Cache", 120, true, Some("cache"), "review"),
-        file(2, "D:\\Cache\\old", 60, false, Some("cache"), "low"),
-        file(3, "D:\\Cache\\recent", 60, false, Some("cache"), "review"),
+        file(1, "D:\\Cache", 300_000_000, true, Some("cache"), "review"),
+        file(
+            2,
+            "D:\\Cache\\old",
+            150_000_000,
+            false,
+            Some("cache"),
+            "low",
+        ),
+        file(
+            3,
+            "D:\\Cache\\recent",
+            150_000_000,
+            false,
+            Some("cache"),
+            "review",
+        ),
         file(
             4,
             "D:\\Downloads\\video.mp4",
@@ -73,19 +88,197 @@ fn groups_collapse_nested_files_and_preserve_size_and_purpose() {
     ]);
     let result = page(&data, &query()).unwrap();
     assert_eq!(result.total, 2);
-    assert_eq!(result.groups[0].name, "应用缓存");
-    assert_eq!(result.groups[0].occupied_bytes, 120);
-    assert_eq!(result.groups[0].count, 1);
-    assert_eq!(result.groups[0].consequence, "可能需要重新下载");
-    assert_eq!(result.groups[1].id, "large-files");
+    assert_eq!(result.groups[0].id, "large-files");
+    assert_eq!(result.groups[1].name, "应用缓存");
+    assert_eq!(result.groups[1].occupied_bytes, 300_000_000);
+    assert_eq!(result.groups[1].count, 1);
+    assert_eq!(result.groups[1].consequence, "可能需要重新下载");
     let mut q = query();
     q.risk = "low".into();
     let low = page(&data, &q).unwrap();
     assert_eq!(low.items[0].id, 2);
-    assert_eq!(low.groups[0].occupied_bytes, 60);
+    assert_eq!(low.groups[0].occupied_bytes, 150_000_000);
     q.risk.clear();
     q.search = "recent".into();
     assert_eq!(page(&data, &q).unwrap().items[0].id, 3);
+}
+
+#[test]
+fn current_rules_find_small_files_in_old_snapshots_without_rewriting_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("index.db")).unwrap();
+    let root = "D:\\RuleScope";
+    store
+        .save_scan(&Scan {
+            id: "s".into(),
+            root: root.into(),
+            status: "complete".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let records = vec![
+        file(0, root, 0, true, None, "review"),
+        file(0, "D:\\RuleScope\\Cache", 10, true, None, "review"),
+        file(
+            0,
+            "D:\\RuleScope\\Cache\\small.bin",
+            10,
+            false,
+            None,
+            "review",
+        ),
+        file(
+            0,
+            "D:\\RuleScope\\Profiles\\Default\\Cache",
+            20,
+            true,
+            None,
+            "review",
+        ),
+        file(
+            0,
+            "D:\\RuleScope\\Profiles\\Default\\Cache\\small.bin",
+            20,
+            false,
+            None,
+            "review",
+        ),
+        file(
+            0,
+            "D:\\RuleScope\\Cache-copy\\personal.bin",
+            30,
+            false,
+            None,
+            "review",
+        ),
+        file(
+            0,
+            "D:\\RuleScope\\Profiles\\Default\\Private\\personal.txt",
+            3,
+            false,
+            None,
+            "review",
+        ),
+        file(
+            0,
+            "D:\\RuleScope\\movie.mkv",
+            200_000_000,
+            false,
+            None,
+            "review",
+        ),
+        file(
+            0,
+            "D:\\RuleScope\\retired\\old.bin",
+            5,
+            false,
+            Some("retired-rule"),
+            "review",
+        ),
+    ];
+    Store::insert_batch(&mut store.connection().unwrap(), "s", &records).unwrap();
+    let original = store
+        .by_path("s", "D:\\RuleScope\\Cache\\small.bin")
+        .unwrap();
+    let template = RuleSet::load(false)
+        .unwrap()
+        .rules
+        .into_iter()
+        .find(|r| r.id == "vscode-cache")
+        .unwrap();
+    let mut fixed = template.clone();
+    fixed.id = "current-fixed".into();
+    fixed.root = "D:\\RuleScope\\Cache".into();
+    let mut wildcard = template;
+    wildcard.id = "current-wildcard".into();
+    wildcard.root = "D:\\RuleScope\\Profiles\\*\\Cache".into();
+    let active = RuleSet::test_rules(vec![fixed, wildcard]);
+    let policy = SafetyPolicy::new(Default::default());
+    let apps = ApplicationIndex::for_scan(&store, "s", &policy).unwrap();
+    let index = build_with_rules(&store, "s", &policy, &apps, &active).unwrap();
+    let result = page(&index, &query()).unwrap();
+    assert_eq!(result.total, 3);
+    assert!(result
+        .items
+        .iter()
+        .any(|f| f.path == "D:\\RuleScope\\Cache"));
+    assert!(result
+        .items
+        .iter()
+        .any(|f| f.path == "D:\\RuleScope\\Profiles\\Default\\Cache"));
+    assert!(result
+        .items
+        .iter()
+        .any(|f| f.path == "D:\\RuleScope\\movie.mkv"));
+    let disabled = RuleSet::test_rules(vec![]);
+    let without_rules = build_with_rules(&store, "s", &policy, &apps, &disabled).unwrap();
+    let unrecognized = page(&without_rules, &query()).unwrap();
+    assert_eq!(unrecognized.total, 1);
+    assert_eq!(unrecognized.items[0].path, "D:\\RuleScope\\movie.mkv");
+    let unchanged = store.by_path("s", &original.path).unwrap();
+    assert_eq!(
+        serde_json::to_value(original).unwrap(),
+        serde_json::to_value(unchanged).unwrap()
+    );
+}
+
+#[test]
+fn suggestions_expire_at_the_first_rule_age_transition_or_clock_rollback() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("index.db")).unwrap();
+    store
+        .save_scan(&Scan {
+            id: "s".into(),
+            root: "D:\\AgeScope".into(),
+            status: "complete".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let now = chrono::Utc::now().timestamp();
+    let mut recent = file(
+        0,
+        "D:\\AgeScope\\Cache\\recent.bin",
+        10,
+        false,
+        None,
+        "review",
+    );
+    recent.modified = now;
+    recent.latest_change = now;
+    let mut older = file(
+        0,
+        "D:\\AgeScope\\Cache\\older.bin",
+        20,
+        false,
+        None,
+        "review",
+    );
+    older.modified = now - 43_200;
+    older.latest_change = now - 43_200;
+    Store::insert_batch(&mut store.connection().unwrap(), "s", &[recent, older]).unwrap();
+    let mut rule = RuleSet::load(false)
+        .unwrap()
+        .rules
+        .into_iter()
+        .find(|r| r.id == "vscode-cache")
+        .unwrap();
+    rule.root = "D:\\AgeScope\\Cache".into();
+    rule.age_days = 1;
+    let rules = RuleSet::test_rules(vec![rule]);
+    let policy = SafetyPolicy::new(Default::default());
+    let apps = ApplicationIndex::for_scan(&store, "s", &policy).unwrap();
+    let index = build_with_rules(&store, "s", &policy, &apps, &rules).unwrap();
+    let result = page(&index, &query()).unwrap();
+    assert_eq!(result.total, 2);
+    assert!(result
+        .items
+        .iter()
+        .all(|file| file.assessment.risk == "review"));
+    let transition = now + 43_201;
+    assert_eq!(index.valid_until, Some(transition));
+    assert!(index.valid_at(transition - 1));
+    assert!(!index.valid_at(transition));
+    assert!(!index.valid_at(index.started - 1));
 }
 
 #[test]
@@ -120,6 +313,220 @@ fn group_selection_is_explicit_and_never_includes_protected_or_unknown_files() {
     q.risk.clear();
     q.group = Some("large-files".into());
     assert!(selection(&data, &q).is_err());
+}
+
+#[test]
+fn analysis_filters_page_before_slicing_and_keep_group_totals_and_cache_current() {
+    let data = index(
+        (1..=150)
+            .map(|id| {
+                file(
+                    id,
+                    &format!("D:\\Cache\\{id:03}"),
+                    1,
+                    false,
+                    Some("cache"),
+                    "low",
+                )
+            })
+            .collect(),
+    );
+    let mut q = query();
+    q.analysis_status = "analyzed".into();
+    q.limit = 20;
+    let analysis = AnalysisFilter::new("analyzed", (121..=150).collect()).unwrap();
+    let first = page_with_analysis(&data, &q, analysis.as_ref()).unwrap();
+    assert_eq!(first.total, 30);
+    assert_eq!(
+        first.items.iter().map(|file| file.id).collect::<Vec<_>>(),
+        (121..=140).collect::<Vec<_>>()
+    );
+    assert_eq!(first.groups[0].count, 30);
+    assert_eq!(first.groups[0].occupied_bytes, 30);
+    q.offset = 20;
+    let second = page_with_analysis(&data, &q, analysis.as_ref()).unwrap();
+    assert_eq!(second.total, 30);
+    assert_eq!(
+        second.items.iter().map(|file| file.id).collect::<Vec<_>>(),
+        (141..=150).collect::<Vec<_>>()
+    );
+    assert_eq!(second.groups[0].count, 30);
+    assert_eq!(data.views.lock().unwrap().len(), 1);
+
+    q.offset = 0;
+    let changed = AnalysisFilter::new("analyzed", (1..=30).collect()).unwrap();
+    let refreshed = page_with_analysis(&data, &q, changed.as_ref()).unwrap();
+    assert_eq!(refreshed.total, 30);
+    assert_eq!(refreshed.items[0].id, 1);
+    assert_eq!(data.views.lock().unwrap().len(), 2);
+    q.analysis_status = "unanalyzed".into();
+    let inverse = AnalysisFilter::new("unanalyzed", (121..=150).collect()).unwrap();
+    let remaining = page_with_analysis(&data, &q, inverse.as_ref()).unwrap();
+    assert_eq!(remaining.total, 120);
+    assert_eq!(
+        remaining
+            .items
+            .iter()
+            .map(|file| file.id)
+            .collect::<Vec<_>>(),
+        (1..=20).collect::<Vec<_>>()
+    );
+    assert_eq!(remaining.groups[0].count, 120);
+    assert_eq!(remaining.groups[0].occupied_bytes, 120);
+
+    for (status, expected) in [("analyzed", 0), ("unanalyzed", 150), ("", 150)] {
+        q.analysis_status = status.into();
+        let empty = AnalysisFilter::new(status, Default::default()).unwrap();
+        let result = page_with_analysis(&data, &q, empty.as_ref()).unwrap();
+        assert_eq!(result.total, expected, "status: {status}");
+        assert_eq!(
+            result.groups.iter().map(|group| group.count).sum::<usize>(),
+            expected
+        );
+        assert_eq!(result.items.len(), expected.min(20));
+    }
+}
+
+#[test]
+fn analyzed_children_remain_visible_and_selection_preserves_risk_and_search_filters() {
+    let data = index(vec![
+        file(1, "D:\\Cache", 190, true, Some("cache"), "review"),
+        file(
+            2,
+            "D:\\Cache\\match-analyzed",
+            40,
+            false,
+            Some("cache"),
+            "low",
+        ),
+        file(
+            3,
+            "D:\\Cache\\match-pending",
+            60,
+            false,
+            Some("cache"),
+            "low",
+        ),
+        file(
+            4,
+            "D:\\Cache\\match-protected",
+            80,
+            false,
+            Some("cache"),
+            "protected",
+        ),
+        file(
+            5,
+            "D:\\Personal\\match.bin",
+            200_000_000,
+            false,
+            None,
+            "review",
+        ),
+        file(6, "D:\\Cache\\other", 10, false, Some("cache"), "low"),
+    ]);
+    let ids = [2, 4, 5, 6].into_iter().collect();
+    let analysis = AnalysisFilter::new("analyzed", ids).unwrap();
+    let mut q = query();
+    q.analysis_status = "analyzed".into();
+    q.group = Some("rule:cache".into());
+    let result = page_with_analysis(&data, &q, analysis.as_ref()).unwrap();
+    assert_eq!(
+        result.items.iter().map(|file| file.id).collect::<Vec<_>>(),
+        vec![2, 6]
+    );
+    let cache_group = result
+        .groups
+        .iter()
+        .find(|group| group.id == "rule:cache")
+        .unwrap();
+    assert_eq!((cache_group.count, cache_group.occupied_bytes), (2, 50));
+    assert_eq!(result.groups[0].id, "large-files");
+    assert_eq!(result.groups[0].count, 1);
+
+    q.offset = 99;
+    q.limit = 1;
+    let beyond = page_with_analysis(&data, &q, analysis.as_ref()).unwrap();
+    assert_eq!(beyond.total, 2);
+    assert!(beyond.items.is_empty());
+    assert_eq!(
+        selection_with_analysis(&data, &q, analysis.as_ref())
+            .unwrap()
+            .iter()
+            .map(|file| file.id)
+            .collect::<Vec<_>>(),
+        vec![2, 6]
+    );
+    q.offset = 0;
+    q.risk = "low".into();
+    q.search = "MATCH".into();
+    for (status, expected) in [("analyzed", 2), ("unanalyzed", 3)] {
+        q.analysis_status = status.into();
+        let filter = AnalysisFilter::new(status, [2, 4, 5, 6].into_iter().collect()).unwrap();
+        let filtered = page_with_analysis(&data, &q, filter.as_ref()).unwrap();
+        assert_eq!(filtered.total, 1);
+        assert_eq!(filtered.items[0].id, expected);
+        assert_eq!(filtered.groups.len(), 1);
+        assert_eq!(filtered.groups[0].count, 1);
+        assert_eq!(
+            selection_with_analysis(&data, &q, filter.as_ref()).unwrap()[0].id,
+            expected
+        );
+    }
+    q.analysis_status = "analyzed".into();
+    q.risk = "protected".into();
+    let protected = page_with_analysis(&data, &q, analysis.as_ref()).unwrap();
+    assert_eq!(protected.total, 1);
+    assert_eq!(protected.items[0].id, 4);
+    assert!(selection_with_analysis(&data, &q, analysis.as_ref())
+        .unwrap()
+        .is_empty());
+    assert!(page(&data, &q).is_err());
+    assert!(selection(&data, &q).is_err());
+    let mismatched = AnalysisFilter::new("unanalyzed", Default::default()).unwrap();
+    assert!(page_with_analysis(&data, &q, mismatched.as_ref()).is_err());
+    assert!(selection_with_analysis(&data, &q, mismatched.as_ref()).is_err());
+}
+
+#[test]
+fn both_activity_directions_keep_ties_stable_across_pages() {
+    let data = index(
+        [30, 10, 20, 20]
+            .into_iter()
+            .enumerate()
+            .map(|(i, changed)| {
+                let id = i as i64 + 1;
+                let mut record = file(
+                    id,
+                    &format!("D:\\Files\\{id}.bin"),
+                    200_000_000,
+                    false,
+                    None,
+                    "review",
+                );
+                record.latest_change = changed;
+                record
+            })
+            .collect(),
+    );
+    let mut q = query();
+    q.group = Some("large-files".into());
+    q.limit = 2;
+    for (sort, expected) in [
+        ("activity", [1, 3, 4, 2]),
+        ("activity_desc", [1, 3, 4, 2]),
+        ("activity_asc", [2, 3, 4, 1]),
+    ] {
+        q.sort = sort.into();
+        let mut ids = Vec::new();
+        for offset in [0, 2] {
+            q.offset = offset;
+            let result = page(&data, &q).unwrap();
+            assert_eq!(result.total, 4);
+            ids.extend(result.items.into_iter().map(|file| file.id));
+        }
+        assert_eq!(ids, expected, "sort: {sort}");
+    }
 }
 
 #[test]
@@ -160,6 +567,102 @@ fn large_batches_require_a_narrower_explicit_selection() {
         page(&data, &q).unwrap();
     }
     assert_eq!(data.views.lock().unwrap().len(), 4);
+    q.search.clear();
+    q.analysis_status = "analyzed".into();
+    let analysis = AnalysisFilter::new("analyzed", (490..=501).collect()).unwrap();
+    let filtered = selection_with_analysis(&data, &q, analysis.as_ref()).unwrap();
+    assert_eq!(
+        filtered.iter().map(|file| file.id).collect::<Vec<_>>(),
+        (490..=501).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn app_data_and_portable_origins_are_shared_without_expanding_cleanup_candidates() {
+    let temp = tempfile::tempdir().unwrap();
+    let store = Store::open(temp.path().join("origins.sqlite")).unwrap();
+    let root = std::env::var("USERPROFILE").unwrap();
+    let local = std::env::var("LOCALAPPDATA").unwrap();
+    let data = format!("{local}\\FixtureEditor\\model.bin");
+    let portable = format!("{root}\\PortableFixture");
+    let portable_file = format!("{portable}\\model.bin");
+    store
+        .save_scan(&Scan {
+            id: "s".into(),
+            root: root.clone(),
+            status: "complete".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .save_apps(
+            "s",
+            &[InstalledApp {
+                id: "editor".into(),
+                name: "FixtureEditor".into(),
+                publisher: String::new(),
+                install_location: "D:\\Installed\\FixtureEditor".into(),
+                source: "Windows 卸载清单".into(),
+                last_used: None,
+            }],
+        )
+        .unwrap();
+    Store::insert_batch(
+        &mut store.connection().unwrap(),
+        "s",
+        &[
+            file(1, &root, 400_001_000, true, None, "review"),
+            file(2, &data, 200_000_000, false, None, "review"),
+            file(3, &portable, 200_001_000, true, None, "review"),
+            file(
+                4,
+                &format!("{portable}\\portable.exe"),
+                1000,
+                false,
+                None,
+                "review",
+            ),
+            file(5, &portable_file, 200_000_000, false, None, "review"),
+            file(
+                6,
+                &format!("{local}\\FixtureEditor\\config.json"),
+                64,
+                false,
+                None,
+                "review",
+            ),
+        ],
+    )
+    .unwrap();
+    let index = build(&store, "s").unwrap();
+    let result = page(&index, &query()).unwrap();
+    assert_eq!(result.total, 2);
+    assert_eq!(
+        result
+            .items
+            .iter()
+            .find(|f| f.path == data)
+            .unwrap()
+            .assessment
+            .owner
+            .as_deref(),
+        Some("FixtureEditor")
+    );
+    assert_eq!(
+        result
+            .items
+            .iter()
+            .find(|f| f.path == portable_file)
+            .unwrap()
+            .assessment
+            .owner
+            .as_deref(),
+        Some("PortableFixture")
+    );
+    assert!(result
+        .items
+        .iter()
+        .all(|f| f.assessment.risk == "review" && f.assessment.rule_id.is_none()));
 }
 
 #[test]

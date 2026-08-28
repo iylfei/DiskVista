@@ -1,4 +1,4 @@
-use crate::state::{error, ContextPreview, SamplePreview, Shared};
+use crate::state::{error, AppState, ContextPreview, SamplePreview, Shared};
 use cleaner_domain::*;
 use cleaner_engine::{
     context::{self, Sample},
@@ -7,10 +7,11 @@ use cleaner_engine::{
 use cleaner_llm::client::{self, Budget};
 use cleaner_platform::credentials;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::sync::{atomic::Ordering, Arc};
 use tauri::State;
 
-fn now() -> i64 {
+pub(crate) fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 pub(crate) fn budget(state: &Shared, scan: &str, max: u32) -> Budget {
@@ -30,11 +31,35 @@ pub(crate) fn budget(state: &Shared, scan: &str, max: u32) -> Budget {
     entry.clone()
 }
 pub(crate) fn snapshot_context(
-    state: &Shared,
+    state: &AppState,
     scan: &str,
     id: i64,
 ) -> Result<AnalysisContext, String> {
-    context::build(&state.store, scan, id).map_err(error)
+    let settings = state.store.settings().map_err(error)?;
+    let policy = cleaner_engine::safety::SafetyPolicy::new(settings);
+    let (_, apps) = state.application_index(scan, &policy)?;
+    context::ContextBuilder::with_index(&state.store, scan, apps)
+        .and_then(|builder| builder.build(id))
+        .map_err(error)
+}
+pub(crate) fn analysis_config_hash(settings: &Settings, rule_version: &str) -> String {
+    policy_config_hash(settings, client::config_hash(&settings.llm, rule_version))
+}
+
+fn policy_config_hash(settings: &Settings, client_config: String) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(
+            serde_json::to_vec(&(
+                client_config,
+                &settings.protected_paths,
+                &settings.ignored_paths,
+                &settings.excluded_llm_paths,
+                &settings.labels,
+            ))
+            .expect("serializable analysis policy")
+        )
+    )
 }
 #[tauri::command]
 pub async fn llm_context(
@@ -105,6 +130,7 @@ pub async fn preview_samples(
     .map_err(error)?
 }
 
+#[derive(Debug)]
 pub(crate) enum AnalysisOutcome {
     Completed,
     Cached,
@@ -149,7 +175,12 @@ fn run_one_with(
         return Err("AI 已关闭".into());
     }
     let rules = RuleSet::load(settings.community_enabled).map_err(error)?;
-    let config = client::config_hash(&settings.llm, &rules.version);
+    let config = analysis_config_hash(&settings, &rules.version);
+    let fresh = snapshot_context(state, &context.scan_id, context.entry_id)?;
+    if context.fingerprint != fresh.fingerprint {
+        return Err("分析输入或历史参考授权已变化，请重新预览".into());
+    }
+    context::validate_samples(&state.store, &fresh, &samples).map_err(error)?;
     if samples.is_empty()
         && state
             .store
@@ -168,17 +199,13 @@ fn run_one_with(
         progress.requests = b.requests.load(Ordering::Relaxed);
         return Ok(AnalysisOutcome::Cached);
     }
-    let fresh = snapshot_context(state, &context.scan_id, context.entry_id)?;
-    if context.fingerprint != fresh.fingerprint {
-        return Err("分析输入已变化，请重新预览".into());
-    }
-    context::validate_samples(&state.store, &fresh, &samples).map_err(error)?;
     if b.cancel.load(Ordering::Relaxed) {
         return Err("分析已取消".into());
     }
     state.progress.lock().unwrap().message = "正在等待 AI 返回…".into();
     let reply = send(&settings.llm, &context, &samples, b);
     let mut result = AnalysisResult {
+        format_version: ANALYSIS_FORMAT_VERSION,
         id: uuid::Uuid::new_v4().to_string(),
         scan_id: context.scan_id.clone(),
         entry_id: context.entry_id,
@@ -191,6 +218,10 @@ fn run_one_with(
         prompt_tokens: None,
         completion_tokens: None,
         included_content: !samples.is_empty(),
+        evidence_details: context::evidence_details(&context),
+        history_references: context.history_references.clone(),
+        request_id: None,
+        request_item_count: 1,
     };
     match reply {
         Ok(reply) => {
@@ -201,12 +232,23 @@ fn run_one_with(
             if !snapshot_context(state, &context.scan_id, context.entry_id)
                 .is_ok_and(|fresh| fresh.fingerprint == context.fingerprint)
                 || context::validate_samples(&state.store, &context, &samples).is_err()
+                || !state.store.settings().is_ok_and(|current| {
+                    RuleSet::load(current.community_enabled).is_ok_and(|rules| {
+                        analysis_config_hash(&current, &rules.version) == result.config_hash
+                    })
+                })
             {
                 result.status = "stale".into();
                 result.message = "分析期间扫描记录、授权范围或文本样本变化，结论已过期".into();
             }
         }
-        Err(e) => result.message = error(e),
+        Err(e) => {
+            if let Some(failure) = e.downcast_ref::<client::BatchFailure>() {
+                result.prompt_tokens = failure.prompt_tokens;
+                result.completion_tokens = failure.completion_tokens;
+            }
+            result.message = error(e);
+        }
     }
     state.store.save_analysis(&result).map_err(error)?;
     let mut p = state.progress.lock().unwrap();
@@ -228,6 +270,7 @@ pub fn analyze(
         return Err("已有 AI 分析任务运行，请等待或取消".into());
     }
     let setup = (|| -> Result<(AnalysisContext, Vec<Sample>, Budget), String> {
+        let setup_guard = state.mutations.lock().unwrap();
         let p = state
             .context_previews
             .lock()
@@ -237,7 +280,7 @@ pub fn analyze(
         if now() - p.created > 600 {
             return Err("元数据授权已过期".into());
         }
-        let samples = if let Some(id) = sample_preview_id {
+        let sample_preview = if let Some(id) = sample_preview_id {
             let s = state
                 .sample_previews
                 .lock()
@@ -247,13 +290,23 @@ pub fn analyze(
             if s.context_id != preview_id || now() - s.created > 600 {
                 return Err("正文授权不属于本次分析或已过期".into());
             }
+            Some(s)
+        } else {
+            None
+        };
+        let settings = state.store.settings().map_err(error)?;
+        let b = budget(state.inner(), &p.context.scan_id, settings.llm.max_requests);
+        b.cancel.store(false, Ordering::SeqCst);
+        drop(setup_guard);
+        let samples = if let Some(s) = sample_preview {
             let ids: Vec<_> = s.samples.iter().map(|s| s.entry_id).collect();
             let live = context::samples(&state.store, &p.context.scan_id, p.context.entry_id, &ids)
                 .map_err(error)?;
-            if live
-                .iter()
-                .zip(&s.samples)
-                .any(|(a, b)| a.fingerprint != b.fingerprint || a.text != b.text)
+            if live.len() != s.samples.len()
+                || live
+                    .iter()
+                    .zip(&s.samples)
+                    .any(|(a, b)| a.fingerprint != b.fingerprint || a.text != b.text)
             {
                 return Err("授权后正文发生变化，请重新预览".into());
             }
@@ -261,9 +314,6 @@ pub fn analyze(
         } else {
             Vec::new()
         };
-        let settings = state.store.settings().map_err(error)?;
-        let b = budget(state.inner(), &p.context.scan_id, settings.llm.max_requests);
-        b.cancel.store(false, Ordering::SeqCst);
         Ok((p.context, samples, b))
     })();
     let (context, samples, b) = match setup {
@@ -298,6 +348,7 @@ pub fn analyze(
 }
 #[tauri::command]
 pub fn cancel_analysis(state: State<'_, Shared>) {
+    let _guard = state.mutations.lock().unwrap();
     for b in state.budgets.lock().unwrap().values() {
         b.cancel.store(true, Ordering::SeqCst);
     }
@@ -389,15 +440,10 @@ mod tests {
                 b.reserve()?;
                 Ok(client::Reply {
                     assessment: ModelAssessment {
-                        purpose: "测试目录".into(),
-                        source: "未知".into(),
-                        consequences: "需要复核".into(),
-                        recovery: "无法确认".into(),
-                        recommendation: "人工确认".into(),
-                        confidence: "low".into(),
-                        uncertainties: vec![],
+                        deletion_advice: DeletionAdvice::Review,
+                        reason: "用途不明，需要人工核实".into(),
                         evidence: vec!["summary".into()],
-                        questions: vec![],
+                        history_matches: vec![],
                     },
                     prompt_tokens: Some(1),
                     completion_tokens: Some(1),
@@ -412,6 +458,8 @@ mod tests {
             state.store.analyses("s", file.id).unwrap()[0].status,
             "success"
         );
+        settings.llm.max_output_tokens = 16_384;
+        state.store.put("settings", &settings).unwrap();
         assert!(matches!(
             run_one_with(&state, context.clone(), vec![], &budget, |_, _, _, _| {
                 panic!("cached analysis must not send another request")

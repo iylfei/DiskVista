@@ -1,5 +1,6 @@
 import type { Scan } from "../lib/types";
-import { date, statusText } from "../lib/api";
+import { History } from "lucide-react";
+import { dateTime, statusText } from "../lib/api";
 import HelpTip from "./HelpTip";
 import { helpText } from "../lib/helpText";
 export default function ScanPicker({
@@ -13,9 +14,10 @@ export default function ScanPicker({
   disabled: boolean;
   onSelect: (scan: Scan) => void;
 }) {
-  if (scans.length < 2) return null;
+  if (!scans.length) return null;
   return (
     <label className="snapshot-picker" htmlFor="scan-snapshot">
+      <History size={17} aria-hidden="true" />
       <span>
         扫描记录
         <HelpTip label="扫描记录" text={helpText.snapshot} />
@@ -32,7 +34,7 @@ export default function ScanPicker({
       >
         {scans.map((s) => (
           <option key={s.id} value={s.id}>
-            {date(s.started)} · {s.root} · {statusText(s.status)}
+            {dateTime(s.started)} · {s.root} · {statusText(s.status)}
           </option>
         ))}
       </select>

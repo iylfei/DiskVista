@@ -39,6 +39,28 @@ export function addSelection(
   return next;
 }
 
+export function removeRecycledSelection(
+  current: Map<number, FileRecord>,
+  results: HistoryItem[],
+) {
+  const recycled = results
+    .filter((item) => item.status === "recycled")
+    .map((item) => ({
+      path: key(item.path),
+      isDir: item.snapshot?.isDir === true,
+    }));
+  return new Map(
+    [...current].filter(([, file]) => {
+      const path = key(file.path);
+      return !recycled.some(
+        (item) =>
+          path === item.path ||
+          (item.isDir && path.startsWith(`${item.path}\\`)),
+      );
+    }),
+  );
+}
+
 export function cleanupResult(items: HistoryItem[]) {
   return items.reduce(
     (result, item) => {
@@ -51,4 +73,18 @@ export function cleanupResult(items: HistoryItem[]) {
     },
     { recycled: 0, skipped: 0, failed: 0, bytes: 0 },
   );
+}
+
+export function addBasketSelection(
+  current: {
+    pending: Map<number, FileRecord>;
+    basket: Map<number, FileRecord>;
+  },
+  files: FileRecord[],
+) {
+  const basket = addSelection(current.basket, files);
+  const pending = new Map(current.pending);
+  for (const id of basket.keys()) pending.delete(id);
+  addSelection(basket, [...pending.values()]);
+  return { basket, pending, added: basket.size - current.basket.size };
 }

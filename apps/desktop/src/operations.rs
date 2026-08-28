@@ -65,6 +65,21 @@ pub async fn history(state: State<'_, Shared>) -> Result<Vec<HistoryItem>, Strin
     crate::background::read(move || state.store.history().map_err(error)).await
 }
 #[tauri::command]
+pub async fn history_page(
+    state: State<'_, Shared>,
+    offset: Option<u64>,
+    limit: Option<u32>,
+) -> Result<HistoryPage, String> {
+    let state = state.inner().clone();
+    crate::background::read(move || {
+        state
+            .store
+            .history_page(offset.unwrap_or(0), limit.unwrap_or(20))
+            .map_err(error)
+    })
+    .await
+}
+#[tauri::command]
 pub fn open_location(
     state: State<'_, Shared>,
     scan_id: String,
