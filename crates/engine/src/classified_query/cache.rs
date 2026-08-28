@@ -1,9 +1,9 @@
 use super::{classifier, needs_classification, scope, Classifier};
 use crate::{analysis_filter::AnalysisFilter, store::Store};
 use anyhow::{ensure, Result};
-use cleaner_domain::{EntryPage, EntryQuery, Group};
+use cleaner_domain::{EntryPage, EntryQuery};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     fmt,
     sync::{Arc, Mutex, OnceLock},
 };
@@ -20,14 +20,8 @@ impl fmt::Display for ClassificationChanged {
 impl std::error::Error for ClassificationChanged {}
 
 #[derive(Debug)]
-enum Contents {
-    Entries(Box<[i64]>),
-    Groups(Vec<Group>),
-}
-
-#[derive(Debug)]
 struct View {
-    contents: Contents,
+    entries: Box<[i64]>,
     started: i64,
     valid_until: Option<i64>,
 }
@@ -174,7 +168,7 @@ impl QueryCache {
                 Ok(true)
             })?;
             Ok(View {
-                contents: Contents::Entries(ids.into_boxed_slice()),
+                entries: ids.into_boxed_slice(),
                 started,
                 valid_until,
             })
@@ -184,9 +178,7 @@ impl QueryCache {
         } else {
             Arc::new(build()?)
         };
-        let Contents::Entries(ids) = &view.contents else {
-            unreachable!()
-        };
+        let ids = &view.entries;
         let start = (query.offset as usize).min(ids.len());
         let end = start
             .saturating_add(query.limit.clamp(1, 200) as usize)
@@ -203,76 +195,6 @@ impl QueryCache {
             items,
             total: ids.len() as u64,
         })
-    }
-
-    pub fn groups(
-        &self,
-        store: &Store,
-        classifier: &Classifier<'_>,
-        origin_key: &str,
-        kind: &str,
-    ) -> Result<Vec<Group>> {
-        let kind = match kind {
-            "risk" => "risk",
-            "category" => "category",
-            _ => "owner",
-        };
-        let started = chrono::Utc::now().timestamp();
-        let revision = self.revision();
-        let key = serde_json::to_string(&("groups", classifier.signature(origin_key)?, kind))?;
-        let build = || {
-            let mut groups = HashMap::<String, Group>::new();
-            let mut valid_until = None;
-            let mut visited = 0usize;
-            let query = EntryQuery {
-                scan_id: classifier.scan.id.clone(),
-                ..Default::default()
-            };
-            scope::visit(store, &query, true, false, None, |mut file| {
-                if visited.is_multiple_of(512) {
-                    self.check_revision(revision)?;
-                }
-                visited += 1;
-                update_expiry(&mut valid_until, classifier.next_change(&file, started));
-                classifier.apply(&mut file);
-                let name = match kind {
-                    "risk" => &file.assessment.risk,
-                    "category" => &file.assessment.category,
-                    _ => file.assessment.owner.as_deref().unwrap_or("未知"),
-                };
-                let group = groups.entry(name.into()).or_insert_with(|| Group {
-                    name: name.into(),
-                    bytes: 0,
-                    count: 0,
-                });
-                group.bytes = group
-                    .bytes
-                    .saturating_add(file.allocated_bytes.unwrap_or(file.logical_bytes));
-                group.count = group.count.saturating_add(1);
-                Ok(true)
-            })?;
-            let mut groups: Vec<_> = groups.into_values().collect();
-            groups.sort_by(|a, b| b.bytes.cmp(&a.bytes).then(a.name.cmp(&b.name)));
-            groups.truncate(100);
-            Ok(View {
-                contents: Contents::Groups(groups),
-                started,
-                valid_until,
-            })
-        };
-        let view = if classifier.cacheable() {
-            self.get(key, started, revision, build)?
-        } else {
-            Arc::new(build()?)
-        };
-        self.check_revision(revision)?;
-        if !view.valid(chrono::Utc::now().timestamp()) {
-            return Err(ClassificationChanged.into());
-        }
-        let Contents::Groups(groups) = &view.contents else {
-            unreachable!()
-        };
-        Ok(groups.clone())
     }
 
     #[cfg(test)]
@@ -307,7 +229,7 @@ mod tests {
 
     fn view(started: i64, valid_until: Option<i64>) -> View {
         View {
-            contents: Contents::Entries(Vec::new().into_boxed_slice()),
+            entries: Vec::new().into_boxed_slice(),
             started,
             valid_until,
         }

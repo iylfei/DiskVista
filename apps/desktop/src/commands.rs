@@ -5,7 +5,7 @@ use cleaner_engine::{
     safety::SafetyPolicy,
     scanner::{self, ScanJob},
 };
-use cleaner_platform::{credentials, filesystem, inventory, process::WorkerJob};
+use cleaner_platform::{filesystem, inventory, process::WorkerJob};
 use std::{
     io::{BufRead, BufReader, Write},
     os::windows::process::CommandExt,
@@ -48,7 +48,9 @@ pub async fn bootstrap(
             volumes: filesystem::volumes(),
             scans,
             settings: state.store.settings().map_err(error)?,
-            has_key: credentials::load().map_err(error)?.is_some(),
+            has_key: crate::settings_store::load_key(&state.store.settings().map_err(error)?.llm)
+                .map_err(error)?
+                .is_some(),
             access_policy: inventory::last_access_policy(),
             scan_locations: crate::locations::available(&app),
         })
@@ -273,34 +275,30 @@ pub async fn space_map(
     parent: String,
 ) -> Result<serde_json::Value, String> {
     let state = state.inner().clone();
-    crate::background::read(move || {
-        state.with_classification(&scan_id, |classifier, _| {
-            let mut root = state.store.by_path(&scan_id, &parent)?;
-            let mut children = state.store.query(&EntryQuery {
-                scan_id: scan_id.clone(),
-                parent: Some(root.path.clone()),
-                limit: 24,
-                ..Default::default()
-            })?;
-            classifier.apply(&mut root);
-            for file in &mut children.items {
-                classifier.apply(file);
-            }
-            Ok(serde_json::json!({"parent":root,"items":children.items,"total":children.total}))
-        })
-    })
-    .await
+    crate::background::read(move || crate::space_map::read(&state, &scan_id, &parent)).await
 }
 #[tauri::command]
 pub async fn entry_detail(
     state: State<'_, Shared>,
     scan_id: String,
     entry_id: i64,
+    for_cleanup: Option<bool>,
 ) -> Result<FileRecord, String> {
     let state = state.inner().clone();
     crate::background::read(move || {
         let mut f = state.classified_entry(&scan_id, entry_id)?;
         let scan = state.store.scan(&scan_id).map_err(error)?;
+        if for_cleanup.unwrap_or(false) {
+            let recycled =
+                cleaner_engine::recycled_targets::RecycledTargets::load(&state.store, &scan)
+                    .map_err(error)?;
+            if recycled.contains(&f.path) {
+                return Err("此项已移入回收站，无需再次加入清单。重新扫描可更新文件状态。".into());
+            }
+            if f.is_dir && recycled.affects_directory(&f.path) {
+                return Err("此目录在扫描后已有内容被回收，请重新扫描后再选择整个目录。".into());
+            }
+        }
         if let Ok(evidence) = cleaner_platform::metadata::executable_evidence(&f.path) {
             f.assessment.evidence.extend(evidence);
         }
@@ -330,15 +328,6 @@ pub async fn entry_detail(
         Ok(f)
     })
     .await
-}
-#[tauri::command]
-pub async fn groups(
-    state: State<'_, Shared>,
-    scan_id: String,
-    kind: String,
-) -> Result<Vec<Group>, String> {
-    let state = state.inner().clone();
-    crate::background::read(move || state.classified_groups(&scan_id, &kind)).await
 }
 #[tauri::command]
 pub async fn rules(state: State<'_, Shared>) -> Result<serde_json::Value, String> {

@@ -244,7 +244,7 @@ pub fn execute(
             } else {
                 item.reason.clone()
             };
-            store.add_history(&record)?;
+            store.add_history_for_scan(&record, &preview.scan_id)?;
             history.push(record);
             continue;
         }
@@ -306,7 +306,8 @@ pub fn execute(
                 }
             }
         }
-        store.add_history(&record)?;
+        record.time = chrono::Utc::now().timestamp();
+        store.add_history_for_scan(&record, &preview.scan_id)?;
         history.push(record);
     }
     Ok(history)

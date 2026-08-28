@@ -161,7 +161,10 @@ fn incremental_seed_replaces_changed_subtrees_and_preserves_unaffected_data() {
             database: store.path.clone(),
             scan_id: second.id.clone(),
             root: second.root.clone(),
-            settings: Settings::default(),
+            settings: Settings {
+                enhanced_scan: true,
+                ..Default::default()
+            },
             journal_probe: Some(journal::Probe {
                 checkpoint,
                 changed_parents: Some(vec![reference]),
@@ -189,6 +192,31 @@ fn incremental_seed_replaces_changed_subtrees_and_preserves_unaffected_data() {
             root.join("unchanged/keep.txt").to_str().unwrap()
         )
         .is_ok());
+
+    fs::write(root.join("while-disabled.txt"), "must be found").unwrap();
+    let third = create_scan(&store, root.to_str().unwrap()).unwrap();
+    let baseline: SnapshotJournal = store
+        .get(&format!("journal:{}", normalize(root.to_str().unwrap())))
+        .unwrap()
+        .unwrap();
+    run(
+        ScanJob {
+            database: store.path.clone(),
+            scan_id: third.id.clone(),
+            root: third.root,
+            settings: Settings::default(),
+            journal_probe: Some(journal::Probe {
+                checkpoint: baseline.checkpoint,
+                changed_parents: Some(vec![]),
+            }),
+        },
+        Arc::new(AtomicBool::new(false)),
+        |_| {},
+    )
+    .unwrap();
+    let disabled = store.scan(&third.id).unwrap();
+    assert_eq!(disabled.mode, "完整扫描");
+    assert_eq!(disabled.files, 4);
 }
 
 #[test]
@@ -251,7 +279,11 @@ fn parent_child_targets_are_deduplicated_and_cancelled_batch_is_safe() {
     assert_eq!(recorded.name, dir.name);
     assert!(recorded.is_dir);
     assert_eq!(
-        store.history().unwrap()[0].snapshot.as_ref().unwrap().name,
+        store.history_page(0, 20).unwrap().items[0]
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .name,
         dir.name
     );
     assert!(path.exists());

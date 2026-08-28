@@ -44,10 +44,6 @@ impl Drop for WorkerJob {
     }
 }
 
-pub fn locking_processes(path: &str) -> Result<Vec<String>> {
-    locking_paths(&[path])
-}
-
 /// Restart Manager registers files, not directories. Use the verified descendant list.
 pub fn locking_paths(paths: &[&str]) -> Result<Vec<String>> {
     use windows::{

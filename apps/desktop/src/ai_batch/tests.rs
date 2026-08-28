@@ -298,5 +298,120 @@ fn opening_new_version_discards_old_ai_content_but_preserves_scan_settings_histo
         settings_before
     );
     assert_eq!(reopened.get::<u32>("llm-budget:s").unwrap(), Some(1));
-    assert_eq!(reopened.history().unwrap().len(), 1);
+    assert_eq!(reopened.history_page(0, 20).unwrap().total, 1);
+}
+
+fn record_cleanup(state: &Shared, context: &AnalysisContext, status: &str) {
+    let file = state
+        .store
+        .entry(&context.scan_id, context.entry_id)
+        .unwrap();
+    state
+        .store
+        .add_history_for_scan(
+            &HistoryItem {
+                id: format!("cleanup-{}", context.entry_id),
+                batch_id: "b".into(),
+                path: file.path,
+                bytes: file.logical_bytes,
+                time: chrono::Utc::now().timestamp(),
+                status: status.into(),
+                message: String::new(),
+                free_space_delta: 0,
+                snapshot: None,
+            },
+            &context.scan_id,
+        )
+        .unwrap();
+}
+
+#[test]
+fn queued_recycled_items_are_skipped_before_sending_without_using_history_reference_consent() {
+    let (_dir, state, contexts, budget) = fixture(3);
+    record_cleanup(&state, &contexts[0], "recycled");
+    record_cleanup(&state, &contexts[1], "failed");
+    record_cleanup(&state, &contexts[2], "skipped");
+    assert!(
+        !state
+            .store
+            .settings()
+            .unwrap()
+            .llm
+            .history_reference_enabled
+    );
+    let outcomes = run_with(
+        &state,
+        contexts.clone(),
+        &budget,
+        false,
+        |_, received, budget| {
+            assert_eq!(
+                received
+                    .iter()
+                    .map(|context| context.entry_id)
+                    .collect::<Vec<_>>(),
+                vec![contexts[1].entry_id, contexts[2].entry_id]
+            );
+            budget.reserve()?;
+            Ok(reply(received))
+        },
+    )
+    .unwrap();
+    assert!(outcomes[0].as_ref().err().unwrap().contains("已移入回收站"));
+    assert!(matches!(outcomes[1], Ok(AnalysisOutcome::Completed)));
+    assert!(matches!(outcomes[2], Ok(AnalysisOutcome::Completed)));
+    assert!(state
+        .store
+        .analyses("s", contexts[0].entry_id)
+        .unwrap()
+        .is_empty());
+    assert_eq!(budget.requests.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn an_entire_recycled_batch_does_not_make_a_request_or_store_an_analysis() {
+    let (_dir, state, contexts, budget) = fixture(2);
+    for context in &contexts {
+        record_cleanup(&state, context, "recycled");
+    }
+    let outcomes = run_with(&state, contexts.clone(), &budget, true, |_, _, _| {
+        panic!("recycled targets must never be sent")
+    })
+    .unwrap();
+    assert!(outcomes.iter().all(|outcome| outcome.is_err()));
+    assert_eq!(budget.requests.load(Ordering::Relaxed), 0);
+    assert_eq!(state.progress.lock().unwrap().finished, 2);
+    for context in contexts {
+        assert!(state
+            .store
+            .analyses("s", context.entry_id)
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[test]
+fn a_recycle_confirmed_during_the_request_marks_the_answer_stale() {
+    let (_dir, state, contexts, budget) = fixture(2);
+    let outcomes = run_with(
+        &state,
+        contexts.clone(),
+        &budget,
+        false,
+        |_, received, budget| {
+            budget.reserve()?;
+            record_cleanup(&state, &contexts[0], "recycled");
+            Ok(reply(received))
+        },
+    )
+    .unwrap();
+    assert!(matches!(outcomes[0], Ok(AnalysisOutcome::Failed(_))));
+    assert!(matches!(outcomes[1], Ok(AnalysisOutcome::Completed)));
+    let removed = state.store.analyses("s", contexts[0].entry_id).unwrap();
+    assert_eq!(removed[0].status, "stale");
+    assert!(removed[0].message.contains("已移入回收站"));
+    assert_eq!(
+        state.store.analyses("s", contexts[1].entry_id).unwrap()[0].status,
+        "success"
+    );
 }

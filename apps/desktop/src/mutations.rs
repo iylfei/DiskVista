@@ -1,11 +1,11 @@
 use crate::state::{classification_key, error, Shared};
 use cleaner_domain::Settings;
-use cleaner_platform::credentials;
 use std::sync::atomic::Ordering;
 use tauri::State;
 
 fn update_ai_consent(previous: &Settings, settings: &mut Settings) -> bool {
-    let changed_provider = previous.llm.base_url != settings.llm.base_url;
+    let changed_provider = crate::settings_store::provider(&previous.llm.base_url).ok()
+        != crate::settings_store::provider(&settings.llm.base_url).ok();
     if changed_provider {
         settings.llm.metadata_consent = false;
         settings.llm.history_reference_enabled = false;
@@ -54,16 +54,11 @@ pub async fn save_settings(
         settings.llm.concurrency = settings.llm.concurrency.clamp(1, 2);
         settings.llm.timeout_seconds = settings.llm.timeout_seconds.clamp(5, 300);
         settings.llm.minimum_bytes = settings.llm.minimum_bytes.max(1048576);
-        if previous.llm.base_url != settings.llm.base_url {
-            credentials::clear().map_err(error)?;
-        }
         if update_ai_consent(&previous, &mut settings) || key.is_some() {
             invalidate_ai_context(&state);
         }
-        if let Some(key) = key {
-            credentials::save(&key).map_err(error)?;
-        }
-        state.store.put("settings", &settings).map_err(error)?;
+        crate::settings_store::save(&state.store, &previous, &settings, key.as_deref())
+            .map_err(error)?;
         if classification_key(&previous)? != classification_key(&settings)? {
             state.invalidate_classification();
         }

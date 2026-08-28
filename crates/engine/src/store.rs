@@ -9,7 +9,10 @@ use std::{
 };
 mod analysis_usage;
 mod history_paging;
+mod query;
+mod recycled_history;
 mod retention;
+mod scan_deletion;
 mod subtrees;
 
 #[derive(Clone)]
@@ -62,7 +65,8 @@ impl Store {
           CREATE TABLE IF NOT EXISTS analyses(id TEXT PRIMARY KEY,scan_id TEXT NOT NULL,entry_id INTEGER NOT NULL,created INTEGER NOT NULL,data TEXT NOT NULL);
           CREATE INDEX IF NOT EXISTS analyses_entry ON analyses(scan_id,entry_id,created DESC);
           CREATE TABLE IF NOT EXISTS history(id TEXT PRIMARY KEY,time INTEGER NOT NULL,data TEXT NOT NULL);
-          CREATE INDEX IF NOT EXISTS history_time ON history(time DESC,id);")?;
+          CREATE INDEX IF NOT EXISTS history_time ON history(time DESC,id);
+          CREATE INDEX IF NOT EXISTS history_recycled_scan ON history(json_extract(data,'$.scanId'),time) WHERE json_extract(data,'$.status')='recycled';")?;
         s.discard_legacy_analyses()?;
         Ok(s)
     }
@@ -117,6 +121,9 @@ impl Store {
     }
     pub fn scans(&self) -> Result<Vec<Scan>> {
         let c = self.connection()?;
+        Self::scans_from(&c)
+    }
+    fn scans_from(c: &Connection) -> Result<Vec<Scan>> {
         let mut s = c.prepare("SELECT data FROM scans ORDER BY started DESC LIMIT 30")?;
         let result = s
             .query_map([], |r| r.get::<_, String>(0))?
@@ -194,96 +201,6 @@ impl Store {
             params![scan, normalize(path)],
             decode,
         )?)
-    }
-    pub fn query(&self, q: &EntryQuery) -> Result<EntryPage> {
-        anyhow::ensure!(q.analysis_status.is_empty(), "AI 分析筛选需要当前有效结果");
-        let c = self.connection()?;
-        let scan_root: Option<String> = c
-            .query_row("SELECT root FROM scans WHERE id=?1", [&q.scan_id], |r| {
-                r.get(0)
-            })
-            .optional()?;
-        let scan_root = scan_root.map(|root| normalize(&root)).unwrap_or_default();
-        let mut cond = String::from("scan_id=?");
-        let mut args: Vec<rusqlite::types::Value> = vec![q.scan_id.clone().into()];
-        if q.directories_only {
-            cond.push_str(" AND is_dir=1");
-        }
-        if q.issues_only {
-            cond.push_str(" AND issue IS NOT NULL");
-        }
-        if q.uncertain_only {
-            cond.push_str(" AND risk='review' AND rule_id IS NULL AND json_extract(assessment,'$.confidence')='low'");
-        }
-        if let Some(parent) = &q.parent {
-            cond.push_str(" AND parent_key=?");
-            args.push(normalize(parent).into());
-        }
-        if let Some(search) = q.search.as_ref().filter(|s| !s.is_empty()) {
-            cond.push_str(" AND instr(path_key,?)>0");
-            args.push(normalize(search).into());
-        }
-        if let Some(risk) = q.risk.as_ref().filter(|s| !s.is_empty()) {
-            match risk.as_str() {
-                "protected" => {
-                    cond.push_str(
-                        " AND (risk='protected' OR complete=0 OR blocked=1 OR path_key=?)",
-                    );
-                    args.push(scan_root.clone().into());
-                }
-                "unknown" => {
-                    cond.push_str(" AND risk='review' AND owner IS NULL AND rule_id IS NULL")
-                }
-                "known" => cond.push_str(" AND (owner IS NOT NULL OR rule_id IS NOT NULL)"),
-                "known_review" => cond
-                    .push_str(" AND risk='review' AND (owner IS NOT NULL OR rule_id IS NOT NULL)"),
-                _ => {
-                    cond.push_str(" AND risk=?");
-                    args.push(risk.clone().into());
-                }
-            }
-        }
-        if let Some(category) = &q.category {
-            cond.push_str(" AND json_extract(assessment,'$.category')=?");
-            args.push(category.clone().into());
-        }
-        if let Some(owner) = &q.owner {
-            cond.push_str(" AND COALESCE(owner,'未知')=?");
-            args.push(owner.clone().into());
-        }
-        // All indexed sizes are non-negative. A redundant >= 0 range can make
-        // SQLite choose a whole-snapshot size index over the directory index.
-        if q.minimum_bytes > 0 {
-            cond.push_str(" AND logical>=?");
-            args.push((q.minimum_bytes.min(i64::MAX as u64) as i64).into());
-        }
-        if q.suggestions {
-            cond.push_str(" AND (rule_id IS NOT NULL OR logical>=104857600)");
-            if q.risk.as_deref() != Some("protected") {
-                cond.push_str(" AND risk NOT IN ('protected','keep') AND complete=1 AND blocked=0 AND path_key<>?");
-                args.push(scan_root.into());
-            }
-        }
-        let total = c.query_row(
-            &format!("SELECT count(*) FROM entries WHERE {cond}"),
-            rusqlite::params_from_iter(&args),
-            |r| r.get(0),
-        )?;
-        let sort = match q.sort.as_deref() {
-            Some("name") => "path_key",
-            Some("activity" | "activity_desc") => "latest_change DESC",
-            Some("activity_asc") => "latest_change ASC",
-            _ => "logical DESC",
-        };
-        args.push(q.limit.clamp(1, 200).into());
-        args.push(q.offset.into());
-        let mut stmt = c.prepare(&format!(
-            "SELECT {FIELDS} FROM entries WHERE {cond} ORDER BY {sort},id LIMIT ? OFFSET ?"
-        ))?;
-        let items = stmt
-            .query_map(rusqlite::params_from_iter(&args), decode)?
-            .collect::<rusqlite::Result<_>>()?;
-        Ok(EntryPage { items, total })
     }
     pub fn pending(&self, scan: &str, limit: usize) -> Result<Vec<FileRecord>> {
         let c = self.connection()?;
@@ -368,25 +285,6 @@ impl Store {
     pub fn stats(&self, scan: &str) -> Result<(u64, u64, u64)> {
         Ok(self.connection()?.query_row("SELECT COALESCE(SUM(is_dir=0),0),COALESCE(SUM(is_dir=1),0),COALESCE(SUM(issue IS NOT NULL),0) FROM entries WHERE scan_id=?1",[scan],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?)
     }
-    pub fn groups(&self, scan: &str, kind: &str) -> Result<Vec<Group>> {
-        let field = match kind {
-            "risk" => "risk",
-            "category" => "COALESCE(json_extract(assessment,'$.category'),'unknown')",
-            _ => "COALESCE(owner,'未知')",
-        };
-        let c = self.connection()?;
-        let mut s=c.prepare(&format!("SELECT {field},SUM(COALESCE(allocated,logical)),count(*) FROM entries WHERE scan_id=?1 AND is_dir=0 GROUP BY {field} ORDER BY SUM(COALESCE(allocated,logical)) DESC LIMIT 100"))?;
-        let result = s
-            .query_map([scan], |r| {
-                Ok(Group {
-                    name: r.get(0)?,
-                    bytes: r.get(1)?,
-                    count: r.get(2)?,
-                })
-            })?
-            .collect::<rusqlite::Result<_>>()?;
-        Ok(result)
-    }
     pub fn descendants(&self, scan: &str, path: &str) -> Result<Vec<FileRecord>> {
         self.descendants_bounded(scan, path, usize::MAX)
     }
@@ -420,15 +318,6 @@ impl Store {
             params![h.id, h.time, serde_json::to_string(h)?],
         )?;
         Ok(())
-    }
-    pub fn history(&self) -> Result<Vec<HistoryItem>> {
-        let c = self.connection()?;
-        let mut s = c.prepare("SELECT data FROM history ORDER BY time DESC LIMIT 500")?;
-        let result = s
-            .query_map([], |r| r.get::<_, String>(0))?
-            .map(|v| Ok(serde_json::from_str(&v?)?))
-            .collect();
-        result
     }
     pub fn recent_recycled_history(
         &self,
@@ -757,7 +646,6 @@ mod tests {
                 .as_deref(),
             Some("Example")
         );
-        assert_eq!(store.groups("s", "category").unwrap().len(), 2);
     }
 
     #[test]

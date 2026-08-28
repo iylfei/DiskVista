@@ -51,13 +51,20 @@ pub fn run(job: ScanJob, cancel: Arc<AtomicBool>, mut progress: impl FnMut(&Scan
     let mut scan = store.scan(&job.scan_id)?;
     scan.status = "scanning".into();
     scan.message = "正在读取文件信息".into();
-    let checkpoint = job
-        .journal_probe
-        .as_ref()
-        .map(|p| p.checkpoint.clone())
-        .or_else(|| journal::checkpoint(&job.root).ok());
+    let checkpoint = if job.settings.enhanced_scan {
+        job.journal_probe
+            .as_ref()
+            .map(|p| p.checkpoint.clone())
+            .or_else(|| journal::checkpoint(&job.root).ok())
+    } else {
+        None
+    };
     let journal_key = format!("journal:{}", normalize(&job.root));
-    let previous: Option<SnapshotJournal> = store.get(&journal_key)?;
+    let previous: Option<SnapshotJournal> = if job.settings.enhanced_scan {
+        store.get(&journal_key)?
+    } else {
+        None
+    };
     let mut reused = false;
     if let (Some(old), Some(current)) = (&previous, &checkpoint) {
         if old.root_identity == root.identity

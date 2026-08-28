@@ -140,13 +140,15 @@ describe("scan history picker", () => {
           scans={scans}
           current={scan.id}
           disabled={false}
+          deleteDisabled={false}
+          onDelete={async () => {}}
           onSelect={() => {}}
         />,
       );
     expect(render([])).toBe("");
     const html = render([scan]);
     expect(html).toContain('aria-label="扫描记录"');
-    expect(html).toContain('value="scan-one" selected=""');
+    expect(html).toContain('aria-expanded="false"');
     expect(html).toContain("D:\\");
     expect(html).toContain("扫描完成");
   });
@@ -157,29 +159,32 @@ describe("scan history picker", () => {
         scans={[scan, { ...scan, id: "scan-two", root: "E:\\" }]}
         current="scan-two"
         disabled
+        deleteDisabled
+        onDelete={async () => {}}
         onSelect={() => {}}
       />,
     );
-    expect(html).toContain('value="scan-two" selected=""');
-    expect(html).not.toContain('value="scan-one" selected=""');
-    expect(html).toMatch(/<select[^>]*disabled=""/);
+    expect(html).toContain("E:\\");
+    expect(html).not.toContain("D:\\");
+    expect(html).toMatch(/<button[^>]*aria-label="扫描记录"[^>]*disabled=""/);
   });
 
   it("distinguishes scans of the same location on the same day", () => {
-    const html = renderToStaticMarkup(
-      <ScanPicker
-        scans={[
-          scan,
-          { ...scan, id: "scan-later", started: scan.started + 3600 },
-        ]}
-        current={scan.id}
-        disabled={false}
-        onSelect={() => {}}
-      />,
-    );
-    const options = [...html.matchAll(/<option[^>]*>(.*?)<\/option>/g)].map(
-      (match) => match[1],
-    );
+    const render = (current: string) =>
+      renderToStaticMarkup(
+        <ScanPicker
+          scans={[
+            scan,
+            { ...scan, id: "scan-later", started: scan.started + 3600 },
+          ]}
+          current={current}
+          disabled={false}
+          deleteDisabled={false}
+          onDelete={async () => {}}
+          onSelect={() => {}}
+        />,
+      );
+    const options = [render(scan.id), render("scan-later")];
     expect(options).toHaveLength(2);
     expect(options[0]).not.toEqual(options[1]);
     expect(options.every((option) => /\d{2}:\d{2}/.test(option))).toBe(true);

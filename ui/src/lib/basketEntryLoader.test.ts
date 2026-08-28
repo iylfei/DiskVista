@@ -48,6 +48,7 @@ describe("basket entry loading", () => {
     expect(call).toHaveBeenCalledExactlyOnceWith("entry_detail", {
       scanId: "scan",
       entryId: 1,
+      forCleanup: true,
     });
     expect(run.onAdd).toHaveBeenCalledExactlyOnceWith(target);
     expect(run.onPending.mock.calls.map(([ids]) => [...ids])).toEqual([
@@ -126,6 +127,16 @@ describe("basket entry loading", () => {
     await added;
     expect(run.onAdd).not.toHaveBeenCalled();
     expect(run.onError).not.toHaveBeenCalled();
+    expect(run.onPending).toHaveBeenLastCalledWith(new Set());
+  });
+
+  it("does not queue an item rejected as already recycled by the backend", async () => {
+    const message = "此项已移入回收站，无需再次加入清单。";
+    call.mockRejectedValueOnce(message);
+    const run = open();
+    await run.loader.add("scan", 1);
+    expect(run.onAdd).not.toHaveBeenCalled();
+    expect(run.onError).toHaveBeenCalledExactlyOnceWith(message);
     expect(run.onPending).toHaveBeenLastCalledWith(new Set());
   });
 

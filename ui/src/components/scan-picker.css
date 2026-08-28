@@ -1,0 +1,117 @@
+.scan-picker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid #dce5ec;
+  border-radius: 7px;
+  background: #f6f9fb;
+  color: #526b80;
+  flex: none;
+}
+.scan-picker > svg {
+  flex: none;
+  color: var(--muted);
+}
+.scan-picker-label {
+  flex: none;
+  font-size: 12px;
+}
+.scan-picker-control {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  max-width: 700px;
+}
+.scan-picker-trigger {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+}
+.scan-picker-trigger > span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scan-picker-trigger > svg {
+  flex: none;
+}
+.scan-picker-list {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 5px);
+  left: 0;
+  right: 0;
+  max-height: min(320px, 45vh);
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  box-shadow: 0 8px 24px #26384a18;
+}
+.scan-picker-list > li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.scan-picker-option {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  text-align: left;
+  padding: 9px 7px;
+}
+.scan-picker-option > svg {
+  flex: none;
+  color: var(--blue);
+}
+.scan-picker-option > span {
+  min-width: 0;
+}
+.scan-picker-path {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.scan-picker-option small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+}
+.scan-picker-option[aria-pressed="true"] {
+  background: #eff5fa;
+}
+.scan-picker-delete {
+  flex: none;
+  margin-right: 4px;
+}
+.scan-picker-delete:hover:not(:disabled) {
+  color: var(--red);
+  background: #fff1ef;
+}
+.scan-delete-body p + p {
+  margin-top: 14px;
+}
+.scan-delete-confirm {
+  color: white;
+  background: var(--red);
+  border-color: var(--red);
+}
+.scan-delete-confirm:hover:not(:disabled) {
+  color: white;
+  background: var(--red);
+  filter: brightness(0.94);
+}

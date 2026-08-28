@@ -8,6 +8,7 @@ pub mod context;
 pub mod directory_knowledge;
 pub mod history_context;
 pub mod incremental;
+pub mod recycled_targets;
 pub mod rules;
 pub mod safety;
 pub mod scanner;

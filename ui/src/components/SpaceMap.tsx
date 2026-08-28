@@ -1,16 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { List } from "lucide-react";
 import type { FileRecord } from "../lib/types";
-import { api, bytes } from "../lib/api";
+import { bytes } from "../lib/api";
 import { treemap } from "../lib/treemap";
+import { useSpaceMap } from "../lib/useSpaceMap";
+import { useSpaceMapMenu } from "./SpaceMapMenu";
 import HelpTip from "./HelpTip";
 import { helpText } from "../lib/helpText";
-
-interface Snapshot {
-  parent: FileRecord;
-  items: FileRecord[];
-  total: number;
-}
 
 export default function SpaceMap({
   scanId,
@@ -18,16 +14,39 @@ export default function SpaceMap({
   revision,
   onOpen,
   onShowFiles,
+  onAddToBasket,
+  queued,
+  adding,
+  disabledReason,
+  cacheable,
 }: {
   scanId: string;
   parent: string;
   revision: string;
   onOpen: (f: FileRecord) => void;
   onShowFiles: () => void;
+  onAddToBasket: (file: FileRecord) => void;
+  queued: Set<number>;
+  adding: Set<number>;
+  disabledReason?: string | null;
+  cacheable: boolean;
 }) {
-  const [data, setData] = useState<Snapshot | null>(null);
-  const [error, setError] = useState("");
-  const [retry, setRetry] = useState(0);
+  const { data, error, retry } = useSpaceMap({
+    scanId,
+    parent,
+    revision,
+    cacheable,
+  });
+  const scope = JSON.stringify([scanId, parent, revision, cacheable]);
+  const menu = useSpaceMapMenu({
+    scope,
+    cacheable,
+    queued,
+    adding,
+    disabledReason,
+    onAddToBasket,
+    onShowFiles,
+  });
   const [hover, setHover] = useState<FileRecord | null>(null);
   const [size, setSize] = useState({ width: 800, height: 400 });
   const container = useRef<HTMLDivElement>(null);
@@ -44,29 +63,24 @@ export default function SpaceMap({
     return () => observer.disconnect();
   }, []);
   useEffect(() => {
-    let live = true;
-    setData(null);
     setHover(null);
-    setError("");
-    api<Snapshot>("space_map", { scanId, parent })
-      .then((result) => {
-        if (live) setData(result);
-      })
-      .catch(() => {
-        if (live) setError("无法读取这个目录的空间分布，请重试。");
-      });
-    return () => {
-      live = false;
-    };
-  }, [scanId, parent, revision, retry]);
-  const visible = data?.items.filter((f) => f.logicalBytes > 0) ?? [];
-  const totalBytes = data?.parent.logicalBytes ?? 0;
-  const rest = Math.max(
-    0,
-    totalBytes - visible.reduce((sum, file) => sum + file.logicalBytes, 0),
+  }, [scope]);
+  const visible = useMemo(
+    () => data?.items.filter((f) => f.logicalBytes > 0) ?? [],
+    [data],
   );
-  const values = [...visible.map((f) => f.logicalBytes), rest];
-  const tiles = treemap(values, size.width, size.height);
+  const totalBytes = data?.parent.logicalBytes ?? 0;
+  const values = useMemo(() => {
+    const rest = Math.max(
+      0,
+      totalBytes - visible.reduce((sum, file) => sum + file.logicalBytes, 0),
+    );
+    return [...visible.map((f) => f.logicalBytes), rest];
+  }, [visible, totalBytes]);
+  const tiles = useMemo(
+    () => treemap(values, size.width, size.height),
+    [values, size],
+  );
   return (
     <section className="space-map-section">
       <div className="map-caption">
@@ -110,10 +124,21 @@ export default function SpaceMap({
                 ][tile.index % 6],
               }}
               onClick={() => (file ? onOpen(file) : onShowFiles())}
+              onContextMenu={(event) =>
+                menu.onContextMenu(event, file ?? null, label)
+              }
+              onKeyDown={(event) => menu.onKeyDown(event, file ?? null, label)}
               onMouseEnter={() => setHover(file ?? null)}
               onMouseLeave={() => setHover(null)}
               onFocus={() => setHover(file ?? null)}
               onBlur={() => setHover(null)}
+              aria-haspopup="menu"
+              aria-expanded={
+                !!menu.target && menu.target.file === (file ?? null)
+              }
+              aria-controls={
+                menu.target?.file === (file ?? null) ? menu.id : undefined
+              }
               aria-label={`${file?.isDir ? "打开文件夹" : file ? "查看文件" : "查看文件列表"} ${label}，${bytes(amount)}`}
               title={`${file?.path ?? label} · ${bytes(amount)} · ${totalBytes ? ((amount / totalBytes) * 100).toFixed(1) : 0}%`}
             >
@@ -131,7 +156,12 @@ export default function SpaceMap({
                 (data ? "这个目录没有已知的非零大小文件" : "正在汇总目录空间…")}
             </span>
             {error && (
-              <button onClick={() => setRetry((value) => value + 1)}>
+              <button
+                onClick={() => {
+                  menu.close();
+                  retry();
+                }}
+              >
                 重试
               </button>
             )}
@@ -147,6 +177,7 @@ export default function SpaceMap({
         {!hover && data && <span>{data.total.toLocaleString()} 项</span>}
         {data && !data.parent.complete && <span>未扫描完整</span>}
       </div>
+      {menu.element}
     </section>
   );
 }

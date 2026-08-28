@@ -52,6 +52,7 @@ import TitleBar from "./components/TitleBar";
 import { version as appVersion } from "../../package.json";
 import { sameSnapshot, startScanPolling } from "./lib/scanPolling";
 import { mergeFileDetail } from "./lib/fileDetail";
+import { afterScanDeletion, excludeDeletedScans } from "./lib/scanRecords";
 
 const navigation = [
   ["overview", "总览", LayoutDashboard],
@@ -71,6 +72,8 @@ export default function App() {
   const pageRef = useRef<Page>(page);
   const [scan, setScan] = useState<Scan | null>(null);
   const scanIdRef = useRef<string | null>(null);
+  const deletedScans = useRef(new Set<string>());
+  const deletingScan = useRef<string | null>(null);
   useLayoutEffect(() => {
     pageRef.current = page;
     scanIdRef.current = scan?.id ?? null;
@@ -156,6 +159,9 @@ export default function App() {
       intervalMs: scanning ? 700 : boot?.analysisProgress.active ? 1000 : 4000,
       isOverview: () => pageRef.current === "overview",
       onStatus: (current) => {
+        if (deletingScan.current || deletedScans.current.has(current.scan.id))
+          return;
+        current = excludeDeletedScans(current, deletedScans.current);
         setScan((previous) =>
           sameSnapshot(previous, current.scan) ? previous : current.scan,
         );
@@ -174,11 +180,17 @@ export default function App() {
         });
         if (current.scan.status !== scan.status) refresh();
       },
-      onBootstrap: (value) =>
+      onBootstrap: (value) => {
+        if (deletingScan.current) return;
+        value = excludeDeletedScans(value, deletedScans.current);
         setBoot((previous) =>
           sameSnapshot(previous, value) ? previous : value,
-        ),
-      onError: fail,
+        );
+      },
+      onError: (error) => {
+        if (!deletingScan.current && !deletedScans.current.has(scan.id))
+          fail(error);
+      },
     });
   }, [
     scan?.id,
@@ -315,7 +327,7 @@ export default function App() {
       detail && scan ? { scanId: scan.id, entryId: detail.id } : null;
     try {
       const b = await api<Bootstrap>("bootstrap");
-      setBoot(b);
+      setBoot(excludeDeletedScans(b, deletedScans.current));
       if (target && scanIdRef.current === target.scanId) {
         const full = await api<FileRecord>("entry_detail", target);
         setDetail((current) =>
@@ -330,10 +342,39 @@ export default function App() {
   }
   function save(settings: Settings) {
     setBoot((b) => (b ? { ...b, settings } : b));
-    api<Bootstrap>("bootstrap").then(setBoot).catch(fail);
+    api<Bootstrap>("bootstrap")
+      .then((b) => setBoot(excludeDeletedScans(b, deletedScans.current)))
+      .catch(fail);
     refresh();
   }
   const selected = new Set(pending.keys());
+  async function deleteScan(target: Scan) {
+    if (deletingScan.current) throw new Error("已有扫描记录正在删除");
+    deletingScan.current = target.id;
+    try {
+      const remaining = await api<Scan[]>("delete_scan", { scanId: target.id });
+      deletedScans.current.add(target.id);
+      setBoot((b) => b && afterScanDeletion(b, remaining, target.id));
+      if (scanIdRef.current === target.id) {
+        const next = remaining[0] ?? null;
+        scanIdRef.current = next?.id ?? null;
+        setScan(next);
+        setParent(next?.root ?? "");
+        setSearch("");
+        setRisk("");
+        setAnalysisStatus("");
+        setShowMapFiles(false);
+        setItems([]);
+        setTotal(0);
+        setIndex(0);
+        resetSelection();
+        setDetail(null);
+      }
+      refresh();
+    } finally {
+      deletingScan.current = null;
+    }
+  }
   const queued = new Set(basket.keys());
   const title = navigation.find((n) => n[0] === page)?.[1];
   const analysisMessageKey = `${analysis?.scanId}:${analysis?.message}`;
@@ -485,6 +526,10 @@ export default function App() {
                       scans={boot.scans}
                       current={scan.id}
                       disabled={!!scanning || cleaning}
+                      deleteDisabled={
+                        !!scanning || cleaning || boot.analysisProgress.active
+                      }
+                      onDelete={deleteScan}
                       onSelect={(s) => {
                         setScan(s);
                         setParent(s.root);
@@ -539,6 +584,17 @@ export default function App() {
                             scanId={scan.id}
                             parent={parent}
                             revision={`${scan.status}:${revision}`}
+                            cacheable={scan.status === "complete"}
+                            queued={queued}
+                            adding={adding}
+                            disabledReason={
+                              cleaning
+                                ? "正在回收，请等待操作完成"
+                                : scan.status !== "complete"
+                                  ? "请先完成扫描，再加入待清理清单"
+                                  : null
+                            }
+                            onAddToBasket={(file) => queueEntry(file.id)}
                             onOpen={open}
                             onShowFiles={() => {
                               setShowMapFiles(true);

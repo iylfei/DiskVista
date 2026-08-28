@@ -163,11 +163,6 @@ export interface ApplicationUnitPage {
   occupiedBytes: number;
   estimated: boolean;
 }
-export interface Group {
-  name: string;
-  bytes: number;
-  count: number;
-}
 export interface CleanupItem {
   entryId: number;
   path: string;

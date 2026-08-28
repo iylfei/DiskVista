@@ -136,35 +136,6 @@
 .file-list-section > .section-heading {
   margin: 10px 0;
 }
-.snapshot-picker {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 12px;
-  padding: 9px 12px;
-  border: 1px solid #dce5ec;
-  border-radius: 7px;
-  background: #f6f9fb;
-  color: #526b80;
-  min-width: 0;
-  flex: none;
-}
-.snapshot-picker > svg {
-  flex: none;
-  color: var(--blue);
-}
-.snapshot-picker > span {
-  white-space: nowrap;
-  font-size: 12px;
-  font-weight: 600;
-}
-.snapshot-picker select {
-  max-width: 100%;
-  min-width: 0;
-  flex: 1;
-  font-size: 12px;
-  padding: 6px 9px;
-}
 @media (max-width: 950px) {
   .map-caption > span {
     max-width: 65%;

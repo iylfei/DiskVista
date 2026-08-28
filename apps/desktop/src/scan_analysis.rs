@@ -4,8 +4,8 @@ use crate::{
 };
 use cleaner_domain::{AnalysisProgress, FileRecord, LlmSettings, Scan, Settings};
 use cleaner_engine::{
-    application_index::ApplicationIndex, classified_query::Classifier, rules::RuleSet,
-    safety::SafetyPolicy,
+    application_index::ApplicationIndex, classified_query::Classifier,
+    recycled_targets::RecycledTargets, rules::RuleSet, safety::SafetyPolicy,
 };
 use cleaner_llm::client::{self, Budget};
 use std::{
@@ -142,6 +142,8 @@ fn collect_candidates(
         .store
         .analysis_candidate_pool(scan_id, minimum_bytes)
         .map_err(error)?;
+    let recycled = RecycledTargets::load(&state.store, scan).map_err(error)?;
+    candidates.retain(|file| !recycled.contains(&file.path));
     let policy = SafetyPolicy::new(settings.clone());
     let (_, apps) = state.application_index(scan_id, &policy)?;
     let rules = RuleSet::load(settings.community_enabled).map_err(error)?;
@@ -325,7 +327,7 @@ fn run_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cleaner_domain::{Assessment, HistoryItem, Settings};
+    use cleaner_domain::{Assessment, HistoryEntrySnapshot, HistoryItem, Settings};
     use cleaner_engine::store::Store;
 
     fn settings() -> LlmSettings {
@@ -397,6 +399,76 @@ mod tests {
         assert!(saved.assessment.rule_id.is_some());
         let pool = state.store.analysis_candidate_pool("s", 100).unwrap();
         assert!(pool.iter().any(|file| file.path == candidates[0].path));
+        assert_eq!(state.progress.lock().unwrap().requests, 0);
+    }
+
+    #[test]
+    fn candidate_collection_ignores_recycled_files_and_directories_but_keeps_failed_and_older_history(
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(temp.path().join("recycled-candidates.sqlite")).unwrap();
+        let scan = Scan {
+            id: "s".into(),
+            root: r"D:\CandidateFixture".into(),
+            started: 100,
+            finished: Some(110),
+            status: "complete".into(),
+            ..Default::default()
+        };
+        store.save_scan(&scan).unwrap();
+        let files: Vec<_> = [
+            "deleted.bin",
+            r"gone\child.bin",
+            "failed.bin",
+            "skipped.bin",
+            "restored.bin",
+        ]
+        .into_iter()
+        .map(|name| candidate(0, &format!(r"D:\CandidateFixture\{name}"), false))
+        .collect();
+        Store::insert_batch(&mut store.connection().unwrap(), "s", &files).unwrap();
+        for (name, status, time, is_dir) in [
+            ("deleted.bin", "recycled", 120, false),
+            ("gone", "recycled", 120, true),
+            ("failed.bin", "failed", 120, false),
+            ("skipped.bin", "skipped", 120, false),
+            ("restored.bin", "recycled", 109, false),
+        ] {
+            store
+                .add_history(&HistoryItem {
+                    id: name.into(),
+                    batch_id: "b".into(),
+                    path: format!(r"D:\CandidateFixture\{name}"),
+                    bytes: 100,
+                    time,
+                    status: status.into(),
+                    message: String::new(),
+                    free_space_delta: 0,
+                    snapshot: Some(HistoryEntrySnapshot {
+                        name: name.into(),
+                        is_dir,
+                        owner: None,
+                        category: String::new(),
+                        rule_id: None,
+                    }),
+                })
+                .unwrap();
+        }
+        let settings = Settings::default();
+        assert!(!settings.llm.history_reference_enabled);
+        let state = crate::state::AppState::new(store);
+        let candidates = collect_candidates(&state, &scan, &settings).unwrap();
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|file| file.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["failed.bin", "skipped.bin", "restored.bin"]
+        );
+        assert_eq!(
+            state.store.analysis_candidate_pool("s", 100).unwrap().len(),
+            5
+        );
         assert_eq!(state.progress.lock().unwrap().requests, 0);
     }
     #[test]

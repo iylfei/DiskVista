@@ -167,13 +167,6 @@ impl AppState {
             Ok(file)
         })
     }
-
-    pub fn classified_groups(&self, scan_id: &str, kind: &str) -> Result<Vec<Group>, String> {
-        self.with_classification(scan_id, |classifier, key| {
-            self.classified_queries
-                .groups(&self.store, classifier, key, kind)
-        })
-    }
 }
 pub fn error(e: impl std::fmt::Display) -> String {
     e.to_string()

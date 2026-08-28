@@ -40,6 +40,16 @@ impl std::ops::Deref for Fixture {
 fn index(entries: Vec<FileRecord>) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().join("index.db")).unwrap();
+    store
+        .save_scan(&Scan {
+            id: "s".into(),
+            root: "D:\\".into(),
+            started: 100,
+            finished: Some(110),
+            status: "complete".into(),
+            ..Default::default()
+        })
+        .unwrap();
     Store::insert_batch(&mut store.connection().unwrap(), "s", &entries).unwrap();
     let index = SuggestionIndex::from_records(
         &store,
@@ -747,4 +757,229 @@ fn old_snapshots_respect_current_protection_and_exclude_unidentified_directories
         .items
         .iter()
         .any(|file| file.path == cache));
+}
+
+fn history_item(id: &str, path: &str, status: &str, is_dir: bool) -> HistoryItem {
+    HistoryItem {
+        id: id.into(),
+        batch_id: "cleanup".into(),
+        path: path.into(),
+        bytes: 100,
+        time: 120,
+        status: status.into(),
+        message: String::new(),
+        free_space_delta: 0,
+        snapshot: Some(HistoryEntrySnapshot {
+            name: path.rsplit('\\').next().unwrap_or("").into(),
+            is_dir,
+            owner: None,
+            category: String::new(),
+            rule_id: None,
+        }),
+    }
+}
+
+#[test]
+fn partial_directory_cleanup_exposes_survivors_and_refreshes_cached_group_totals() {
+    let data = index(vec![
+        file(1, r"D:\Cache", 400, true, Some("cache"), "low"),
+        file(2, r"D:\Cache\old.bin", 100, false, Some("cache"), "low"),
+        file(3, r"D:\Cache\keep.bin", 50, false, Some("cache"), "low"),
+        file(4, r"D:\Cache\Live", 250, true, Some("cache"), "low"),
+        file(5, r"D:\Cache\Live\a.bin", 125, false, Some("cache"), "low"),
+        file(6, r"D:\Cache\Live\b.bin", 125, false, Some("cache"), "low"),
+        file(7, r"D:\Cache-copy", 90, true, Some("cache"), "low"),
+    ]);
+    let q = SuggestionQuery {
+        group: Some("rule:cache".into()),
+        ..query()
+    };
+    let before = page(&data, &q).unwrap();
+    assert_eq!(before.total, 2);
+    assert_eq!(before.groups[0].occupied_bytes, 490);
+    let snapshot = serde_json::to_value(data.store.entry("s", 1).unwrap()).unwrap();
+    for item in [
+        history_item("deleted", r"d:/cache/OLD.bin", "recycled", false),
+        history_item("failed", r"D:\Cache\keep.bin", "failed", false),
+        history_item("skipped", r"D:\Cache\Live", "skipped", true),
+    ] {
+        data.store.add_history_for_scan(&item, "s").unwrap();
+    }
+    let after = page(&data, &q).unwrap();
+    assert_eq!(after.total, 3);
+    assert_eq!(after.groups[0].count, 3);
+    assert_eq!(after.groups[0].occupied_bytes, 390);
+    assert_eq!(
+        selection(&data, &q)
+            .unwrap()
+            .iter()
+            .map(|file| file.id)
+            .collect::<Vec<_>>(),
+        vec![4, 7, 3]
+    );
+    assert_eq!(
+        serde_json::to_value(data.store.entry("s", 1).unwrap()).unwrap(),
+        snapshot
+    );
+
+    data.store
+        .add_history_for_scan(
+            &history_item("directory", r"D:\Cache\Live", "recycled", true),
+            "s",
+        )
+        .unwrap();
+    let after_directory = page(&data, &q).unwrap();
+    assert_eq!(after_directory.total, 2);
+    assert_eq!(after_directory.groups[0].occupied_bytes, 140);
+    assert_eq!(
+        selection(&data, &q)
+            .unwrap()
+            .iter()
+            .map(|file| file.id)
+            .collect::<Vec<_>>(),
+        vec![7, 3]
+    );
+}
+
+#[test]
+fn recycled_filter_precedes_paging_and_the_group_selection_limit() {
+    let data = index(
+        (1..=607)
+            .map(|id| {
+                file(
+                    id,
+                    &format!(r"D:\Files\{id}.bin"),
+                    200_000_000 + id as u64,
+                    false,
+                    Some("cache"),
+                    "low",
+                )
+            })
+            .collect(),
+    );
+    let mut q = SuggestionQuery {
+        group: Some("rule:cache".into()),
+        limit: 2,
+        ..query()
+    };
+    assert_eq!(page(&data, &q).unwrap().total, 607);
+    assert!(selection(&data, &q).is_err());
+    let mut connection = data.store.connection().unwrap();
+    let transaction = connection.transaction().unwrap();
+    for id in 1..=607 {
+        let item = history_item(
+            &format!("h-{id}"),
+            &format!(r"D:\Files\{id}.bin"),
+            if id <= 601 {
+                "recycled"
+            } else if id == 607 {
+                "failed"
+            } else {
+                "skipped"
+            },
+            false,
+        );
+        transaction
+            .execute(
+                "INSERT INTO history VALUES(?1,?2,?3)",
+                rusqlite::params![item.id, item.time, serde_json::to_string(&item).unwrap()],
+            )
+            .unwrap();
+    }
+    transaction.commit().unwrap();
+    let first = page(&data, &q).unwrap();
+    assert_eq!(first.total, 6);
+    assert_eq!(first.groups[0].count, 6);
+    assert_eq!(
+        first.groups[0].occupied_bytes,
+        (602..=607).map(|id| 200_000_000 + id).sum::<u64>()
+    );
+    assert_eq!(
+        first.items.iter().map(|file| file.id).collect::<Vec<_>>(),
+        vec![607, 606]
+    );
+    q.offset = 2;
+    assert_eq!(
+        page(&data, &q)
+            .unwrap()
+            .items
+            .iter()
+            .map(|file| file.id)
+            .collect::<Vec<_>>(),
+        vec![605, 604]
+    );
+    assert_eq!(selection(&data, &q).unwrap().len(), 6);
+}
+
+#[test]
+fn later_scan_of_a_restored_path_is_not_hidden_by_older_recycle_history() {
+    let data = index(vec![file(
+        1,
+        r"D:\Files\restored.bin",
+        200_000_000,
+        false,
+        Some("cache"),
+        "low",
+    )]);
+    data.store
+        .add_history_for_scan(
+            &history_item("h", r"D:\Files\restored.bin", "recycled", false),
+            "s",
+        )
+        .unwrap();
+    assert_eq!(page(&data, &query()).unwrap().total, 0);
+    let new_scan = Scan {
+        id: "new".into(),
+        root: r"D:\Files".into(),
+        started: 120,
+        finished: Some(120),
+        status: "complete".into(),
+        ..Default::default()
+    };
+    data.store.save_scan(&new_scan).unwrap();
+    let restored = file(
+        0,
+        r"D:\Files\restored.bin",
+        200_000_000,
+        false,
+        Some("cache"),
+        "low",
+    );
+    Store::insert_batch(&mut data.store.connection().unwrap(), "new", &[restored]).unwrap();
+    let file = data.store.by_path("new", r"D:\Files\restored.bin").unwrap();
+    let new_index =
+        SuggestionIndex::from_records(&data.store, "new", HashMap::new(), [Ok(file)].into_iter())
+            .unwrap();
+    assert_eq!(page(&new_index, &query()).unwrap().total, 1);
+}
+
+#[test]
+fn recycled_unc_aliases_are_matched_from_original_candidate_paths() {
+    let data = index(vec![
+        file(
+            1,
+            r"\\?\UNC\server\share\cache\old.bin",
+            100,
+            false,
+            Some("cache"),
+            "low",
+        ),
+        file(
+            2,
+            r"\\server\share\cache-copy\keep.bin",
+            50,
+            false,
+            Some("cache"),
+            "low",
+        ),
+    ]);
+    data.store
+        .add_history_for_scan(
+            &history_item("unc", r"\\SERVER\Share\cache", "recycled", true),
+            "s",
+        )
+        .unwrap();
+    let result = page(&data, &query()).unwrap();
+    assert_eq!(result.total, 1);
+    assert_eq!(result.items[0].id, 2);
 }

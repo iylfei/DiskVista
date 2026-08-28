@@ -472,42 +472,6 @@ fn structure_and_current_owner_category_and_uncertainty_filters_combine() {
 }
 
 #[test]
-fn groups_use_current_classification_and_file_allocations_without_directory_double_counting() {
-    let parent = format!("{ROOT}\\Cache");
-    let mut directory = file(&parent, 50_000);
-    directory.is_dir = true;
-    let fixture = Fixture::new(&[
-        directory,
-        file(&format!("{parent}\\first.bin"), 200),
-        file(&format!("{parent}\\second.bin"), 300),
-    ]);
-    let rules = RuleSet::test_rules(vec![rule(&parent)]);
-    let policy = SafetyPolicy::new(Default::default());
-    let apps = ApplicationIndex::new(&[], &policy);
-    let classifier = Classifier::new(&fixture.scan, &rules, &policy, &apps);
-    let cache = QueryCache::default();
-    let groups = cache
-        .groups(&fixture.store, &classifier, "origin", "owner")
-        .unwrap();
-    assert_eq!(groups.len(), 1);
-    assert_eq!(
-        (groups[0].name.as_str(), groups[0].count, groups[0].bytes),
-        ("Fixture app", 2, 502)
-    );
-    cache
-        .groups(&fixture.store, &classifier, "origin", "owner")
-        .unwrap();
-    assert_eq!(cache.build_count(), 1);
-    assert_eq!(
-        cache
-            .groups(&fixture.store, &classifier, "origin", "category")
-            .unwrap()[0]
-            .name,
-        "cache"
-    );
-}
-
-#[test]
 fn next_age_threshold_includes_currently_excluded_matches() {
     let now = chrono::Utc::now().timestamp();
     let path = format!("{ROOT}\\recent.bin");

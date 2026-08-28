@@ -1,4 +1,5 @@
 use super::*;
+use crate::recycled_targets::RecycledTargets;
 use anyhow::bail;
 
 #[derive(PartialEq, Eq)]
@@ -8,6 +9,7 @@ struct Key {
     group: Option<String>,
     sort: String,
     analysis: Option<AnalysisFilter>,
+    recycled: RecycledTargets,
 }
 pub(super) struct View {
     key: Key,
@@ -16,6 +18,11 @@ pub(super) struct View {
 }
 
 fn matches(index: &SuggestionIndex, file: &Candidate, key: &Key) -> bool {
+    if key.recycled.contains(&file.path)
+        || (file.is_dir && key.recycled.affects_directory(&file.path))
+    {
+        return false;
+    }
     let a = &index.assessments[file.assessment];
     let allowed = !matches!(a.risk.as_str(), "protected" | "keep");
     let risk = match key.risk.as_str() {
@@ -99,13 +106,15 @@ fn with_view<T>(
     query: &SuggestionQuery,
     analysis: Option<&AnalysisFilter>,
     read: impl FnOnce(&View) -> T,
-) -> T {
+) -> Result<T> {
+    let scan = index.store.require_finished(&index.scan_id)?;
     let key = Key {
         search: normalize(&query.search),
         risk: query.risk.clone(),
         group: query.group.clone(),
         sort: query.sort.clone(),
         analysis: analysis.cloned(),
+        recycled: RecycledTargets::load(&index.store, &scan)?,
     };
     let mut cache = index.views.lock().unwrap();
     if let Some(position) = cache.iter().position(|v| v.key == key) {
@@ -117,7 +126,7 @@ fn with_view<T>(
         }
         cache.push_front(build_view(index, key));
     }
-    read(cache.front().unwrap())
+    Ok(read(cache.front().unwrap()))
 }
 
 pub fn page(index: &SuggestionIndex, query: &SuggestionQuery) -> Result<SuggestionPage> {
@@ -141,7 +150,7 @@ pub fn page_with_analysis(
                 .copied()
                 .collect::<Vec<_>>(),
         )
-    });
+    })?;
     Ok(SuggestionPage {
         groups,
         total,
@@ -173,7 +182,7 @@ pub fn selection_with_analysis(
             .filter(|&i| index.assessments[index.entries[i].assessment].risk != "protected")
             .take(501)
             .collect()
-    });
+    })?;
     if selected.len() > 500 {
         bail!("这一类超过 500 项，请先缩小搜索范围或按页选择");
     }

@@ -28,7 +28,11 @@ export function createBasketEntryLoader({
       pending.set(key, request);
       notify();
       try {
-        const file = await api<FileRecord>("entry_detail", { scanId, entryId });
+        const file = await api<FileRecord>("entry_detail", {
+          scanId,
+          entryId,
+          forCleanup: true,
+        });
         if (current !== generation) return;
         if (file.id !== entryId)
           throw new Error("读取的项目不一致，请重新选择");

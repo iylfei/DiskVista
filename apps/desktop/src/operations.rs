@@ -60,11 +60,6 @@ pub fn cancel_cleanup(state: State<'_, Shared>) {
     state.cleanup_cancel.store(true, Ordering::SeqCst);
 }
 #[tauri::command]
-pub async fn history(state: State<'_, Shared>) -> Result<Vec<HistoryItem>, String> {
-    let state = state.inner().clone();
-    crate::background::read(move || state.store.history().map_err(error)).await
-}
-#[tauri::command]
 pub async fn history_page(
     state: State<'_, Shared>,
     offset: Option<u64>,

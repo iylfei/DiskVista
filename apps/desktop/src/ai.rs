@@ -5,7 +5,6 @@ use cleaner_engine::{
     rules::RuleSet,
 };
 use cleaner_llm::client::{self, Budget};
-use cleaner_platform::credentials;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::sync::{atomic::Ordering, Arc};
@@ -149,7 +148,7 @@ pub(crate) fn run_one(
         samples,
         b,
         |settings, context, samples, budget| {
-            let key = credentials::load()?;
+            let key = crate::settings_store::load_key(settings)?;
             client::analyze(settings, key.as_deref(), context, &json!(samples), budget)
         },
     )
@@ -364,8 +363,10 @@ pub async fn test_connection(
     let stored = state.store.settings().map_err(error)?;
     let key = if key.is_some() {
         key
-    } else if stored.llm.base_url == settings.base_url {
-        credentials::load().map_err(error)?
+    } else if crate::settings_store::provider(&stored.llm.base_url).map_err(error)?
+        == crate::settings_store::provider(&settings.base_url).map_err(error)?
+    {
+        crate::settings_store::load_key(&settings).map_err(error)?
     } else {
         None
     };

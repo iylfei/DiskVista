@@ -36,7 +36,6 @@ fn fixture(count: usize) -> (tempfile::TempDir, Store, Vec<HistoryItem>) {
 #[test]
 fn pages_reach_all_history_with_stable_ties_and_preserve_internal_queries() {
     let (_directory, store, expected) = fixture(607);
-    let legacy = serde_json::to_value(store.history().unwrap()).unwrap();
     let references =
         serde_json::to_value(store.recent_recycled_history(0, 100, 200).unwrap()).unwrap();
     let mut actual = Vec::new();
@@ -57,11 +56,6 @@ fn pages_reach_all_history_with_stable_ties_and_preserve_internal_queries() {
     let beyond = store.history_page(1_000, 20).unwrap();
     assert_eq!(beyond.total, 607);
     assert!(beyond.items.is_empty());
-    assert_eq!(legacy.as_array().unwrap().len(), 500);
-    assert_eq!(
-        serde_json::to_value(store.history().unwrap()).unwrap(),
-        legacy
-    );
     assert_eq!(
         serde_json::to_value(store.recent_recycled_history(0, 100, 200).unwrap()).unwrap(),
         references
@@ -91,7 +85,7 @@ fn history_page_only_decodes_requested_rows_and_reads_legacy_snapshots() {
     store
         .connection()
         .unwrap()
-        .execute("INSERT INTO history VALUES('invalid',-1,'not JSON')", [])
+        .execute("INSERT INTO history VALUES('invalid',-1,'{}')", [])
         .unwrap();
     let first = store.history_page(0, 20).unwrap();
     assert_eq!(first.total, 26);

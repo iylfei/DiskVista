@@ -6,6 +6,7 @@ use cleaner_domain::{AnalysisContext, AnalysisResult, LlmSettings, ANALYSIS_FORM
 use cleaner_engine::{
     classified_query::Classifier,
     context::{self, ContextBuilder},
+    recycled_targets::RecycledTargets,
     rules::RuleSet,
     safety::SafetyPolicy,
 };
@@ -24,7 +25,7 @@ pub(crate) fn run(
         budget,
         automatic,
         |settings, contexts, budget| {
-            let key = cleaner_platform::credentials::load()?;
+            let key = crate::settings_store::load_key(settings)?;
             cleaner_llm::analyze_batch(settings, key.as_deref(), contexts, budget)
         },
     )
@@ -58,6 +59,7 @@ fn run_with(
     let policy = SafetyPolicy::new(settings.clone());
     let (_, applications) = state.application_index(scan_id, &policy)?;
     let scan = state.store.require_finished(scan_id).map_err(error)?;
+    let recycled = RecycledTargets::load(&state.store, &scan).map_err(error)?;
     let classifier = Classifier::new(&scan, &rules, &policy, &applications);
     let builder =
         ContextBuilder::with_index(&state.store, scan_id, applications.clone()).map_err(error)?;
@@ -68,20 +70,25 @@ fn run_with(
         .map_err(error)?;
     let mut outcomes = HashMap::new();
     let mut pending = Vec::new();
+    let mut paths = HashMap::new();
     for context in &contexts {
-        let eligible = state
-            .store
-            .entry(scan_id, context.entry_id)
-            .is_ok_and(|mut file| {
-                classifier.apply(&mut file);
-                crate::scan_analysis::eligible(
-                    &file,
-                    &policy,
-                    &applications,
-                    settings.llm.minimum_bytes,
-                )
-            });
-        if !eligible {
+        let file = state.store.entry(scan_id, context.entry_id);
+        let removed = file
+            .as_ref()
+            .is_ok_and(|file| recycled.contains(&file.path));
+        let eligible = file.is_ok_and(|mut file| {
+            paths.insert(context.entry_id, file.path.clone());
+            classifier.apply(&mut file);
+            crate::scan_analysis::eligible(
+                &file,
+                &policy,
+                &applications,
+                settings.llm.minimum_bytes,
+            )
+        });
+        if removed {
+            outcomes.insert(context.entry_id, Err("文件已移入回收站，已跳过".into()));
+        } else if !eligible {
             outcomes.insert(
                 context.entry_id,
                 Err("文件已不符合批量分析的来源或大小范围，已跳过".into()),
@@ -107,6 +114,18 @@ fn run_with(
             pending.push(context.clone());
         }
     }
+    let recycled = RecycledTargets::load(&state.store, &scan).map_err(error)?;
+    pending.retain(|context| {
+        if paths
+            .get(&context.entry_id)
+            .is_some_and(|path| recycled.contains(path))
+        {
+            outcomes.insert(context.entry_id, Err("文件已移入回收站，已跳过".into()));
+            false
+        } else {
+            true
+        }
+    });
     if !pending.is_empty() {
         let current = state.store.settings().map_err(error)?;
         let current_rules = RuleSet::load(current.community_enabled).map_err(error)?;
@@ -150,6 +169,7 @@ fn run_with(
             }
         };
         let final_settings = state.store.settings().map_err(error)?;
+        let final_recycled = RecycledTargets::load(&state.store, &scan).map_err(error)?;
         let final_rules = RuleSet::load(final_settings.community_enabled).map_err(error)?;
         let unchanged = authorized(&final_settings.llm, automatic)
             && ai::analysis_config_hash(&final_settings, &final_rules.version) == config;
@@ -187,7 +207,13 @@ fn run_with(
                 Ok(assessment) => {
                     result.status = "success".into();
                     result.assessment = Some(assessment);
-                    if !unchanged
+                    if paths
+                        .get(&context.entry_id)
+                        .is_some_and(|path| final_recycled.contains(path))
+                    {
+                        result.status = "stale".into();
+                        result.message = "分析期间文件已移入回收站，结论已过期".into();
+                    } else if !unchanged
                         || !final_builder.as_ref().is_some_and(|builder| {
                             builder
                                 .build(context.entry_id)

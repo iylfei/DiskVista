@@ -8,6 +8,9 @@ mod locations;
 mod mutations;
 mod operations;
 mod scan_analysis;
+mod scans;
+mod settings_store;
+mod space_map;
 mod state;
 mod suggestions;
 mod window;
@@ -35,20 +38,19 @@ fn main() {
             commands::start_scan,
             commands::cancel_scan,
             commands::get_scan,
+            scans::delete_scan,
             commands::query_entries,
             suggestions::cleanup_suggestions,
             suggestions::select_suggestion_group,
             commands::application_units,
             commands::space_map,
             commands::entry_detail,
-            commands::groups,
             mutations::save_settings,
             mutations::set_annotation,
             commands::rules,
             operations::preview_cleanup,
             operations::execute_cleanup,
             operations::cancel_cleanup,
-            operations::history,
             operations::history_page,
             operations::open_location,
             operations::open_system,

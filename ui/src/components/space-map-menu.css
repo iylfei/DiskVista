@@ -1,0 +1,43 @@
+.space-map-menu {
+  position: fixed;
+  z-index: 1200;
+  width: 244px;
+  padding: 5px;
+  border: 1px solid #dce4eb;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 5px 20px #23374924;
+  overflow: auto;
+}
+.space-map-menu-target {
+  margin: 3px 8px 6px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.space-map-menu > button {
+  width: 100%;
+  justify-content: flex-start;
+  border-color: transparent;
+  padding: 8px;
+  font-size: 12px;
+  white-space: normal;
+  text-align: left;
+}
+.space-map-menu > button > svg {
+  flex: none;
+}
+.space-map-menu > button:not(:disabled):hover,
+.space-map-menu > button:not(:disabled):focus-visible {
+  background: #edf3f7;
+}
+.space-map-menu > .space-map-menu-reason {
+  margin: 1px 8px 7px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}

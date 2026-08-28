@@ -294,8 +294,6 @@ export default function SettingsPage({
               onChange={(e) => llm({ timeoutSeconds: Number(e.target.value) })}
             />
           </label>
-        </div>
-        <div className="form-grid three">
           <label htmlFor="ai-minimum-size">
             <span>
               自动分析门槛（MiB）
@@ -465,7 +463,7 @@ export default function SettingsPage({
                   },
                   key: null,
                 });
-                acceptSaved(saved);
+                onSave(saved);
                 setNote("保护设置已保存");
               } catch (e) {
                 onError(e);
@@ -488,7 +486,7 @@ export default function SettingsPage({
                   key: "",
                 });
                 setKey("");
-                acceptSaved(saved);
+                onSave(saved);
                 setNote("密钥已从 Windows 凭据存储移除");
               } catch (e) {
                 onError(e);

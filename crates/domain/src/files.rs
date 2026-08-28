@@ -125,14 +125,6 @@ pub struct EntryPage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Group {
-    pub name: String,
-    pub bytes: u64,
-    pub count: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct CleanupItem {
     pub entry_id: i64,
     pub path: String,
