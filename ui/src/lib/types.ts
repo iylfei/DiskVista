@@ -79,6 +79,7 @@ export interface Settings {
   enhancedScan: boolean;
   communityEnabled: boolean;
   protectedPaths: string[];
+  unprotectedPaths: string[];
   ignoredPaths: string[];
   excludedLlmPaths: string[];
   labels: Record<string, string>;

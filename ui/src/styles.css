@@ -933,6 +933,26 @@ label {
 .detail-content .ai-section {
   margin-top: 20px;
 }
+.unprotect-button {
+  width: 100%;
+  margin-top: 12px;
+  color: var(--red);
+  border-color: #e7cccc;
+}
+.unprotect-button:hover {
+  color: #8d3737;
+  border-color: #d9b3b3;
+  background: #fdf7f7;
+}
+button.unprotect-confirm {
+  color: #fff;
+  background: var(--red);
+  border-color: var(--red);
+}
+button.unprotect-confirm:hover:not(:disabled) {
+  background: #8d3737;
+  border-color: #8d3737;
+}
 .evidence {
   padding: 10px 0;
   font-size: 11px;
@@ -994,6 +1014,10 @@ details > p.muted {
 .modal.wide {
   width: 780px;
   max-width: min(780px, 92vw);
+}
+.modal.compact {
+  width: 420px;
+  max-width: min(420px, 92vw);
 }
 .modal::backdrop {
   background: #202e403b;

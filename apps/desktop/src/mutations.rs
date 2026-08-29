@@ -16,6 +16,7 @@ fn update_ai_consent(previous: &Settings, settings: &mut Settings) -> bool {
         || previous.labels != settings.labels
         || previous.excluded_llm_paths != settings.excluded_llm_paths
         || previous.protected_paths != settings.protected_paths
+        || previous.unprotected_paths != settings.unprotected_paths
         || previous.ignored_paths != settings.ignored_paths
 }
 
@@ -131,6 +132,9 @@ mod tests {
         assert!(update_ai_consent(&previous, &mut next));
         next = previous.clone();
         next.ignored_paths.push("D:\\ignored".into());
+        assert!(update_ai_consent(&previous, &mut next));
+        next = previous.clone();
+        next.unprotected_paths.push("D:\\allowed".into());
         assert!(update_ai_consent(&previous, &mut next));
     }
 

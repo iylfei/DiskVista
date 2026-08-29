@@ -417,7 +417,7 @@ export default function SettingsPage({
       <section className="panel">
         <h2>不想清理或发送的内容</h2>
         <p>
-          系统保护始终开启。你可以在文件详情中保护某个位置、忽略项目或禁止发送给
+          系统保护默认开启。你可以在文件详情中保护某个位置、忽略项目或禁止发送给
           AI，在这里取消这些设置。
         </p>
         {(["protectedPaths", "ignoredPaths", "excludedLlmPaths"] as const).map(

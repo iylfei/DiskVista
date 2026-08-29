@@ -1,6 +1,6 @@
 use crate::{
     application_origins::{self, ApplicationOrigin, OriginKind},
-    safety::SafetyPolicy,
+    safety::{is_unprotected_by_paths, SafetyPolicy},
     store::Store,
 };
 use anyhow::Result;
@@ -14,6 +14,8 @@ pub struct ApplicationIndex {
     roots: HashMap<String, Vec<usize>>,
     names: HashMap<String, Vec<usize>>,
     origins: BTreeMap<String, ApplicationOrigin>,
+    protected_paths: Vec<String>,
+    unprotected_paths: Vec<String>,
 }
 
 impl ApplicationIndex {
@@ -37,6 +39,8 @@ impl ApplicationIndex {
             roots,
             names,
             origins: application_origins::from_inventory(apps, policy),
+            protected_paths: policy.settings.protected_paths.clone(),
+            unprotected_paths: policy.settings.unprotected_paths.clone(),
         }
     }
 
@@ -131,6 +135,9 @@ impl ApplicationIndex {
     }
 
     pub fn installed_reason(&self, file: &FileRecord) -> Option<String> {
+        if is_unprotected_by_paths(&file.path, &self.protected_paths, &self.unprotected_paths) {
+            return None;
+        }
         // Protection previously used the first matching installer record, not the deepest.
         self.matching(&normalize(&file.path))
             .min()
@@ -219,6 +226,30 @@ mod tests {
             assert_eq!(index.origin(&path).unwrap().name, "Registered App");
             apps.reverse();
         }
+    }
+
+    #[test]
+    fn explicit_exception_removes_installed_application_protection() {
+        let apps = vec![InstalledApp {
+            id: "app".into(),
+            name: "Example".into(),
+            publisher: String::new(),
+            install_location: "D:\\Programs\\Example".into(),
+            source: "test".into(),
+            last_used: None,
+        }];
+        let mut settings = cleaner_domain::Settings::default();
+        settings
+            .unprotected_paths
+            .push("D:\\Programs\\Example\\cache".into());
+        let policy = SafetyPolicy::new(settings);
+        let index = ApplicationIndex::new(&apps, &policy);
+        assert!(index
+            .installed_reason(&FileRecord {
+                path: "D:\\Programs\\Example\\cache\\data.bin".into(),
+                ..Default::default()
+            })
+            .is_none());
     }
 
     #[test]

@@ -195,6 +195,23 @@ describe("evidence panel safety", () => {
     );
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>选择此项/);
     expect(html).toContain("Protected");
+    expect(html).toContain("解除文件受保护状态");
+  });
+  it("only offers the protection override for protected targets", () => {
+    const render = (risk: string) =>
+      renderToStaticMarkup(
+        <DetailPanel
+          file={file(risk)}
+          scanId="s"
+          llmEnabled={false}
+          onClose={noop}
+          onSelect={noop}
+          onChanged={noop}
+          onError={noop}
+        />,
+      );
+    expect(render("review")).not.toContain("解除文件受保护状态");
+    expect(render("protected")).toContain("解除文件受保护状态");
   });
   it("queues files and directories while retaining protection", () => {
     for (const target of [

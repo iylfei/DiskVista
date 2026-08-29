@@ -3,6 +3,7 @@ import {
   X,
   FolderOpen,
   ShieldPlus,
+  ShieldOff,
   Sparkles,
   Info,
   Check,
@@ -60,6 +61,7 @@ export default function DetailPanel({
   const [label, setLabel] = useState("");
   const [reloadResults, setReloadResults] = useState(0);
   const [annotating, setAnnotating] = useState(false);
+  const [confirmingUnprotect, setConfirmingUnprotect] = useState(false);
   const [refreshingResults, setRefreshingResults] = useState(false);
   useEffect(() => {
     setResults([]);
@@ -79,13 +81,15 @@ export default function DetailPanel({
     [file.id, scanId, analysisActive, revision, reloadResults, onError],
   );
   async function act(kind: string, value = "") {
-    if (annotating) return;
+    if (annotating) return false;
     setAnnotating(true);
     try {
       await api("set_annotation", { scanId, entryId: file.id, kind, value });
       onChanged();
+      return true;
     } catch (e) {
       onError(e);
+      return false;
     } finally {
       setAnnotating(false);
     }
@@ -288,6 +292,16 @@ export default function DetailPanel({
             {refreshingResults ? "正在刷新…" : "刷新分析记录"}
           </button>
         </section>
+        {a.risk === "protected" && (
+          <button
+            className="unprotect-button"
+            disabled={annotating}
+            onClick={() => setConfirmingUnprotect(true)}
+          >
+            <ShieldOff size={16} />
+            解除文件受保护状态
+          </button>
+        )}
       </div>
       <footer>
         {onAddToBasket && (
@@ -415,6 +429,34 @@ export default function DetailPanel({
               onClick={analyze}
             >
               确认发送并分析
+            </button>
+          </footer>
+        </Modal>
+      )}
+      {confirmingUnprotect && (
+        <Modal
+          title="解除文件受保护状态？"
+          compact
+          closeDisabled={annotating}
+          onClose={() => setConfirmingUnprotect(false)}
+        >
+          <footer>
+            <button
+              type="button"
+              disabled={annotating}
+              onClick={() => setConfirmingUnprotect(false)}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              className="unprotect-confirm"
+              disabled={annotating}
+              onClick={async () => {
+                if (await act("unprotect")) setConfirmingUnprotect(false);
+              }}
+            >
+              {annotating ? "正在解除…" : "确认解除"}
             </button>
           </footer>
         </Modal>

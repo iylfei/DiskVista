@@ -82,6 +82,7 @@ impl<'a> Classifier<'a> {
                 &self.rules.rules,
                 roots,
                 &self.policy.settings.protected_paths,
+                &self.policy.settings.unprotected_paths,
                 &self.policy.settings.ignored_paths,
                 &self.policy.settings.labels,
             ))?)

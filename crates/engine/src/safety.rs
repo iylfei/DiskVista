@@ -58,8 +58,19 @@ impl SafetyPolicy {
         }
     }
 
+    pub fn is_unprotected(&self, path: &str) -> bool {
+        is_unprotected_by_paths(
+            path,
+            &self.settings.protected_paths,
+            &self.settings.unprotected_paths,
+        )
+    }
+
     pub fn reason(&self, file: &FileRecord) -> Option<String> {
         let p = normalize(&file.path);
+        if self.is_unprotected(&p) {
+            return None;
+        }
         if p.len() <= 3 || p.starts_with("\\\\") || file.path.contains('\0') {
             return Some("卷根目录或非本地普通路径，禁止回收".into());
         }
@@ -124,6 +135,9 @@ impl SafetyPolicy {
     }
 
     pub fn installed_reason(&self, file: &FileRecord, apps: &[InstalledApp]) -> Option<String> {
+        if self.is_unprotected(&file.path) {
+            return None;
+        }
         apps.iter()
             .find(|a| {
                 self.specific_install_root(&a.install_location)
@@ -165,6 +179,23 @@ impl SafetyPolicy {
             Some("json" | "ini" | "toml" | "yaml" | "yml" | "txt" | "md" | "cfg")
         )
     }
+}
+
+pub(crate) fn is_unprotected_by_paths(
+    path: &str,
+    protected_paths: &[String],
+    unprotected_paths: &[String],
+) -> bool {
+    let deepest = |paths: &[String]| {
+        paths
+            .iter()
+            .filter(|root| within(path, root))
+            .map(|root| normalize(root).len())
+            .max()
+    };
+    let protected = deepest(protected_paths);
+    deepest(unprotected_paths)
+        .is_some_and(|unprotected| protected.is_none_or(|protected| unprotected >= protected))
 }
 
 pub fn sensitive_path(path: &str) -> bool {
@@ -232,5 +263,25 @@ mod tests {
                 })
                 .is_some());
         }
+    }
+
+    #[test]
+    fn explicit_exception_overrides_system_and_user_protection_for_its_subtree() {
+        let mut settings = Settings::default();
+        settings.protected_paths.push("D:\\data".into());
+        settings.unprotected_paths.push("D:\\data\\allowed".into());
+        let policy = SafetyPolicy::new(settings);
+        let allowed = FileRecord {
+            path: "D:\\data\\allowed\\.env".into(),
+            attributes: 0x4,
+            ..Default::default()
+        };
+        assert!(policy.reason(&allowed).is_none());
+        assert!(policy
+            .reason(&FileRecord {
+                path: "D:\\data\\blocked\\.env".into(),
+                ..Default::default()
+            })
+            .is_some());
     }
 }

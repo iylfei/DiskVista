@@ -11,6 +11,7 @@ pub struct Settings {
     pub enhanced_scan: bool,
     pub community_enabled: bool,
     pub protected_paths: Vec<String>,
+    pub unprotected_paths: Vec<String>,
     pub ignored_paths: Vec<String>,
     pub excluded_llm_paths: Vec<String>,
     pub labels: BTreeMap<String, String>,

@@ -73,6 +73,7 @@ pub fn classification_key(settings: &Settings) -> Result<String, String> {
     serde_json::to_string(&(
         settings.community_enabled,
         &settings.protected_paths,
+        &settings.unprotected_paths,
         &settings.ignored_paths,
         &settings.labels,
     ))

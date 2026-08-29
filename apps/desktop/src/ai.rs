@@ -52,6 +52,7 @@ fn policy_config_hash(settings: &Settings, client_config: String) -> String {
             serde_json::to_vec(&(
                 client_config,
                 &settings.protected_paths,
+                &settings.unprotected_paths,
                 &settings.ignored_paths,
                 &settings.excluded_llm_paths,
                 &settings.labels,

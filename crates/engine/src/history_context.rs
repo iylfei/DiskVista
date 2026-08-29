@@ -62,17 +62,18 @@ impl HistoryPool {
                 ..Default::default()
             };
             let may_be_directory = snapshot.is_none_or(|value| value.is_dir);
-            let protected_overlap = policy
-                .settings
-                .protected_paths
-                .iter()
-                .chain(&policy.settings.ignored_paths)
-                .chain(&policy.settings.excluded_llm_paths)
-                .chain(&policy.system_roots)
-                .chain(&policy.cloud_roots)
-                .any(|path| {
-                    within(&file.path, path) || (may_be_directory && within(path, &file.path))
-                });
+            let protected_overlap = !policy.is_unprotected(&file.path)
+                && policy
+                    .settings
+                    .protected_paths
+                    .iter()
+                    .chain(&policy.settings.ignored_paths)
+                    .chain(&policy.settings.excluded_llm_paths)
+                    .chain(&policy.system_roots)
+                    .chain(&policy.cloud_roots)
+                    .any(|path| {
+                        within(&file.path, path) || (may_be_directory && within(path, &file.path))
+                    });
             if policy.reason(&file).is_some()
                 || policy.installed_reason(&file, apps).is_some()
                 || protected_overlap

@@ -42,6 +42,7 @@ export function installBackend(
       enhancedScan: false,
       communityEnabled: false,
       protectedPaths: ["D:\\保护目录"],
+      unprotectedPaths: [],
       ignoredPaths: [],
       excludedLlmPaths: [],
       labels: {},

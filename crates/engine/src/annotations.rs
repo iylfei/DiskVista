@@ -9,7 +9,22 @@ pub fn apply(store: &Store, scan_id: &str, entry_id: i64, kind: &str, value: &st
     let target = store.entry(scan_id, entry_id)?;
     let mut settings = store.settings()?;
     let paths = match kind {
-        "protect" => Some(&mut settings.protected_paths),
+        "protect" => {
+            settings
+                .unprotected_paths
+                .retain(|p| normalize(p) != normalize(&target.path));
+            Some(&mut settings.protected_paths)
+        }
+        "unprotect" => {
+            ensure!(
+                normalize(&target.path) != normalize(&scan.root),
+                "扫描根目录不能解除保护"
+            );
+            settings
+                .protected_paths
+                .retain(|p| normalize(p) != normalize(&target.path));
+            Some(&mut settings.unprotected_paths)
+        }
         "ignore" => Some(&mut settings.ignored_paths),
         "exclude_llm" => Some(&mut settings.excluded_llm_paths),
         "label" => {
@@ -135,5 +150,15 @@ mod tests {
         assert_eq!(root.logical_bytes, 1025);
         apply(&store, "s", target.id, "protect", "").unwrap();
         assert_eq!(store.settings().unwrap().protected_paths.len(), 1);
+
+        apply(&store, "s", target.id, "unprotect", "").unwrap();
+        let settings = store.settings().unwrap();
+        assert!(settings.protected_paths.is_empty());
+        assert_eq!(settings.unprotected_paths, vec![target.path]);
+        assert!(store
+            .descendants("s", "D:\\fixture\\cache")
+            .unwrap()
+            .iter()
+            .all(|f| f.assessment.risk != "protected"));
     }
 }

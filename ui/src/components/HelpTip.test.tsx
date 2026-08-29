@@ -198,6 +198,7 @@ describe("AI output limit settings", () => {
     enhancedScan: false,
     communityEnabled: false,
     protectedPaths: [],
+    unprotectedPaths: [],
     ignoredPaths: [],
     excludedLlmPaths: [],
     labels: {},
