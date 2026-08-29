@@ -8,6 +8,49 @@
   flex: 1;
   min-height: 280px;
 }
+.application-file-view {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+.application-file-heading {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 2px 0 12px;
+  margin-bottom: 10px;
+  background: #fff;
+  border-bottom: 1px solid var(--line);
+}
+.application-file-heading > button {
+  flex: none;
+}
+.application-file-heading > div {
+  min-width: 0;
+}
+.application-file-heading h2,
+.application-file-heading small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.application-file-heading small {
+  margin-top: 2px;
+}
+.application-file-view .space-map {
+  height: clamp(260px, calc(100dvh - 380px), 720px);
+}
+.application-file-list {
+  margin-top: 16px;
+  scroll-margin-top: 64px;
+}
+.application-file-list .table-scroll {
+  height: clamp(260px, calc(100dvh - 360px), 620px);
+}
 .unit-intro {
   margin: 0 0 12px;
   color: var(--muted);

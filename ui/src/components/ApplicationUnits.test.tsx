@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { UnitSummary } from "./ApplicationUnits";
+import ApplicationFileView from "./ApplicationFileView";
 import { ComponentSummary } from "./ApplicationUnitRow";
 import AddToBasketButton from "./AddToBasketButton";
 import { applicationRows, expandedSearchResults } from "../lib/applicationTree";
@@ -8,7 +9,7 @@ import {
   componentCleanupBlockReason,
   unitCleanupBlockReason,
 } from "../lib/cleanupTarget";
-import type { ApplicationUnit, UnitComponent } from "../lib/types";
+import type { ApplicationUnit, FileRecord, UnitComponent } from "../lib/types";
 const unit: ApplicationUnit = {
   id: "one",
   name: "Game A",
@@ -52,6 +53,65 @@ describe("application-level results", () => {
     expect(html).toContain("未扫描完整");
     expect(html).toContain("估算");
     expect(html).not.toContain("<script>");
+  });
+});
+
+describe("in-page application files", () => {
+  const root: FileRecord = {
+    id: 7,
+    path: "D:\\Games\\Game A",
+    parent: "D:\\Games",
+    name: "Game A",
+    isDir: true,
+    logicalBytes: 1024,
+    allocatedBytes: 1024,
+    modified: 0,
+    latestChange: 0,
+    accessed: 0,
+    created: 0,
+    identity: "7:7",
+    attributes: 0,
+    links: 1,
+    fileCount: 100,
+    issue: null,
+    complete: true,
+    hasBlockedChildren: false,
+    assessment: {
+      category: "application",
+      owner: "Game A",
+      confidence: "high",
+      risk: "review",
+      purpose: "应用文件",
+      consequence: "删除可能影响运行",
+      recovery: "重新安装",
+      recommendation: "查看文件",
+      ruleId: null,
+      protectedReason: null,
+      evidence: [],
+    },
+  };
+
+  it("keeps file browsing inside application space with a leading back action", () => {
+    const html = renderToStaticMarkup(
+      <ApplicationFileView
+        scanId="s"
+        status="complete"
+        revision={1}
+        root={root}
+        title="Game A"
+        queued={new Set()}
+        adding={new Set()}
+        onBack={() => {}}
+        onDetail={() => {}}
+        onCloseDetail={() => {}}
+        onAddToBasket={() => {}}
+        onError={() => {}}
+      />,
+    );
+    expect(html).toContain("返回");
+    expect(html).toContain("Game A");
+    expect(html).toContain("当前目录的文件");
+    expect(html.indexOf("返回")).toBeLessThan(html.indexOf("Game A"));
   });
 });
 

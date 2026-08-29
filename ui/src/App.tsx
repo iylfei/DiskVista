@@ -610,11 +610,8 @@ export default function App() {
                           scanId={scan.id}
                           status={scan.status}
                           revision={revision}
-                          onOpen={(file) => {
-                            open(file);
-                            if (file.isDir) setShowMapFiles(true);
-                          }}
                           onDetail={setDetail}
+                          onCloseDetail={() => setDetail(null)}
                           onAddToBasket={queueEntry}
                           queued={queued}
                           adding={adding}

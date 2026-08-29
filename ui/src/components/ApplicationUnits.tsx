@@ -11,6 +11,7 @@ import {
   expandedSearchResults,
 } from "../lib/applicationTree";
 import { UnitSummary, ComponentSummary } from "./ApplicationUnitRow";
+import ApplicationFileView from "./ApplicationFileView";
 import HelpTip from "./HelpTip";
 import AddToBasketButton from "./AddToBasketButton";
 import { helpText } from "../lib/helpText";
@@ -22,8 +23,8 @@ export default function ApplicationUnits({
   scanId,
   status,
   revision,
-  onOpen,
   onDetail,
+  onCloseDetail,
   onAddToBasket,
   queued,
   adding,
@@ -32,8 +33,8 @@ export default function ApplicationUnits({
   scanId: string;
   status: string;
   revision: number;
-  onOpen: (f: FileRecord) => void;
   onDetail: (f: FileRecord) => void;
+  onCloseDetail: () => void;
   onAddToBasket: (entryId: number) => void;
   queued: Set<number>;
   adding: Set<number>;
@@ -45,7 +46,13 @@ export default function ApplicationUnits({
   const [busy, setBusy] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [reload, setReload] = useState(0);
+  const [browseTarget, setBrowseTarget] = useState<{
+    file: FileRecord;
+    title: string;
+  } | null>(null);
   const scroll = useRef<HTMLDivElement>(null);
+  const listScrollTop = useRef(0);
+  const restoreListScroll = useRef(false);
   const cancelInspection = useRef<(() => void) | null>(null);
   useLayoutEffect(
     () => () => cancelInspection.current?.(),
@@ -63,10 +70,18 @@ export default function ApplicationUnits({
     overscan: 6,
     getItemKey: (index) => visible[index].key,
   });
+  useLayoutEffect(() => {
+    if (!browseTarget && restoreListScroll.current && scroll.current) {
+      scroll.current.scrollTop = listScrollTop.current;
+      restoreListScroll.current = false;
+    }
+  }, [browseTarget, visible.length]);
   useEffect(() => {
     setPage(0);
     setData(null);
     setExpanded(new Set());
+    setBrowseTarget(null);
+    listScrollTop.current = 0;
   }, [scanId]);
   useEffect(() => {
     if (pending) return;
@@ -97,12 +112,28 @@ export default function ApplicationUnits({
     };
   }, [scanId, status, pending, search, page, revision, reload, onError]);
 
-  function inspect(entryId: number, action: "open" | "detail") {
+  function inspect(
+    entryId: number,
+    action: "open" | "detail",
+    title = "应用文件",
+  ) {
     cancelInspection.current?.();
+    const previousScrollTop = scroll.current?.scrollTop ?? 0;
     cancelInspection.current = startFileDetailLoad({
       scanId,
       entryId,
-      onResult: action === "open" ? onOpen : onDetail,
+      onResult:
+        action === "open"
+          ? (file) => {
+              if (!file.isDir) {
+                onDetail(file);
+                return;
+              }
+              listScrollTop.current = previousScrollTop;
+              setBrowseTarget({ file, title });
+              onCloseDetail();
+            }
+          : onDetail,
       onError,
     });
   }
@@ -128,6 +159,29 @@ export default function ApplicationUnits({
             : "本次扫描没有完成。请选择已完成的扫描记录，或重新扫描。"}
         </span>
       </div>
+    );
+  if (browseTarget)
+    return (
+      <section className="application-units" aria-label="应用文件">
+        <ApplicationFileView
+          scanId={scanId}
+          status={status}
+          revision={revision}
+          root={browseTarget.file}
+          title={browseTarget.title}
+          queued={queued}
+          adding={adding}
+          onBack={() => {
+            restoreListScroll.current = true;
+            setBrowseTarget(null);
+            onCloseDetail();
+          }}
+          onDetail={(file) => inspect(file.id, "detail")}
+          onCloseDetail={onCloseDetail}
+          onAddToBasket={onAddToBasket}
+          onError={onError}
+        />
+      </section>
     );
   return (
     <section className="application-units" aria-label="应用与文件夹占用">
@@ -193,7 +247,11 @@ export default function ApplicationUnits({
                         onClick={() => {
                           if (canExpand(unit)) toggle(unit.id);
                           else if (unit.components[0])
-                            void inspect(unit.components[0].entryId, "open");
+                            void inspect(
+                              unit.components[0].entryId,
+                              "open",
+                              unit.name,
+                            );
                         }}
                       />
                       <div className="unit-actions">
@@ -208,6 +266,7 @@ export default function ApplicationUnits({
                               void inspect(
                                 unit.components[0].entryId,
                                 unit.children.length ? "open" : "detail",
+                                unit.name,
                               )
                             }
                           >
@@ -241,7 +300,11 @@ export default function ApplicationUnits({
                     <ComponentSummary
                       component={item.component}
                       onOpen={() =>
-                        void inspect(item.component.entryId, "open")
+                        void inspect(
+                          item.component.entryId,
+                          "open",
+                          item.component.path,
+                        )
                       }
                       onDetail={() =>
                         void inspect(item.component.entryId, "detail")
