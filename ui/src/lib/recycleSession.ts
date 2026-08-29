@@ -4,43 +4,50 @@ import type { CleanupPreview, FileRecord, HistoryItem } from "./types";
 
 type Target = Pick<FileRecord, "id" | "isDir">;
 export interface RecycleDialogState {
-  phase: "previewing" | "ready" | "executing" | "error" | "complete";
-  preview: CleanupPreview | null;
-  acknowledged: boolean;
+  phase: "checking" | "executing" | "error" | "complete";
   error: string;
   cancelRequested: boolean;
   cancelError: string;
 }
-
 export const initialRecycleState: RecycleDialogState = {
-  phase: "previewing",
-  preview: null,
-  acknowledged: false,
+  phase: "checking",
   error: "",
   cancelRequested: false,
   cancelError: "",
 };
-
-export function needsRecycleAcknowledgement(
-  files: readonly Target[],
-  preview: CleanupPreview | null,
+function validatePreview(
+  result: CleanupPreview,
+  scanId: string,
+  targetIds: ReadonlySet<number>,
 ) {
-  return (
-    files.some((file) => file.isDir) || !!preview?.requiresExtraConfirmation
-  );
+  const receivedIds = new Set<number>();
+  if (
+    !result ||
+    !result.id ||
+    result.scanId !== scanId ||
+    !Array.isArray(result.items) ||
+    result.items.length < 1 ||
+    result.items.length > targetIds.size ||
+    result.items.some((item) => {
+      if (
+        !item ||
+        !targetIds.has(item.entryId) ||
+        receivedIds.has(item.entryId)
+      )
+        return true;
+      receivedIds.add(item.entryId);
+      return false;
+    })
+  )
+    throw new Error("回收检查与当前清单不一致，请重试。");
 }
-
-export function canExecuteRecycle(
-  files: readonly Target[],
-  state: RecycleDialogState,
-) {
-  return (
-    state.phase === "ready" &&
-    !!state.preview?.items.some((item) => item.allowed) &&
-    (!needsRecycleAcknowledgement(files, state.preview) || state.acknowledged)
-  );
+function deniedMessage(preview: CleanupPreview) {
+  const reasons = preview.items
+    .filter((item) => !item.allowed)
+    .slice(0, 3)
+    .map((item) => `${item.path}：${item.reason}`);
+  return `没有项目通过安全检查${reasons.length ? `：${reasons.join("；")}` : "。"}`;
 }
-
 export function createRecycleSession({
   scanId,
   files,
@@ -55,6 +62,7 @@ export function createRecycleSession({
   onBusyChange: (busy: boolean) => void;
 }) {
   let live = true;
+  let running = false;
   let request = 0;
   let state = initialRecycleState;
   const targets = files.map(({ id, isDir }) => ({ id, isDir }));
@@ -69,76 +77,58 @@ export function createRecycleSession({
       phase: "error",
       error: error instanceof Error ? error.message : String(error),
     });
-
-  async function preview() {
-    if (!live || state.phase === "executing" || state.phase === "complete")
+  async function run() {
+    if (
+      !live ||
+      running ||
+      state.phase === "executing" ||
+      state.phase === "complete"
+    )
       return;
-    const current = ++request;
-    update({ ...initialRecycleState });
+    running = true;
     try {
-      if (
-        !scanId ||
-        targets.length < 1 ||
-        targets.length > selectionLimit ||
-        targetIds.size !== targets.length
-      )
-        throw new Error(`每次只能检查 1–${selectionLimit} 个不重复的项目。`);
-      const result = await api<CleanupPreview>("preview_cleanup", {
-        scanId,
-        entryIds: targets.map((file) => file.id),
-      });
-      if (!live || current !== request) return;
-      const receivedIds = new Set<number>();
-      if (
-        !result ||
-        !result.id ||
-        result.scanId !== scanId ||
-        !Array.isArray(result.items) ||
-        result.items.length < 1 ||
-        result.items.length > targetIds.size ||
-        result.items.some((item) => {
-          if (
-            !item ||
-            !targetIds.has(item.entryId) ||
-            receivedIds.has(item.entryId)
-          )
-            return true;
-          receivedIds.add(item.entryId);
-          return false;
-        })
-      )
-        throw new Error("回收预览与当前清单不一致，请重新检查。");
-      update({
-        ...initialRecycleState,
-        phase: "ready",
-        preview: result,
-      });
-    } catch (error) {
-      if (live && current === request) failed(error);
-    }
-  }
-
-  async function execute() {
-    if (!live || !canExecuteRecycle(targets, state) || !state.preview) return;
-    const { preview, acknowledged } = state;
-    update({ ...state, phase: "executing" });
-    onBusyChange(true);
-    let result: HistoryItem[] | null = null;
-    try {
-      result = await api<HistoryItem[]>("execute_cleanup", {
-        previewId: preview.id,
-        acknowledgeRisk: acknowledged,
-      });
-      update({ ...state, phase: "complete" });
-    } catch (error) {
-      failed(error);
+      const current = ++request;
+      update({ ...initialRecycleState });
+      let preview: CleanupPreview;
+      try {
+        if (
+          !scanId ||
+          targets.length < 1 ||
+          targets.length > selectionLimit ||
+          targetIds.size !== targets.length
+        )
+          throw new Error(`每次只能处理 1–${selectionLimit} 个不重复的项目。`);
+        preview = await api<CleanupPreview>("preview_cleanup", {
+          scanId,
+          entryIds: targets.map((file) => file.id),
+        });
+        if (!live || current !== request) return;
+        validatePreview(preview, scanId, targetIds);
+        if (!preview.items.some((item) => item.allowed))
+          throw new Error(deniedMessage(preview));
+      } catch (error) {
+        if (live && current === request) failed(error);
+        return;
+      }
+      update({ ...initialRecycleState, phase: "executing" });
+      onBusyChange(true);
+      let result: HistoryItem[] | null = null;
+      try {
+        result = await api<HistoryItem[]>("execute_cleanup", {
+          previewId: preview.id,
+          acknowledgeRisk: true,
+        });
+        update({ ...initialRecycleState, phase: "complete" });
+      } catch (error) {
+        failed(error);
+      } finally {
+        onBusyChange(false);
+      }
+      if (result !== null) onDone(result);
     } finally {
-      onBusyChange(false);
+      running = false;
     }
-    // Once execution starts, its outcome still belongs to the parent if the view unmounts.
-    if (result !== null) onDone(result);
   }
-
   async function cancelRemaining() {
     if (!live || state.phase !== "executing" || state.cancelRequested) return;
     const current = request;
@@ -154,24 +144,13 @@ export function createRecycleSession({
         });
     }
   }
-
   function dispose() {
     live = false;
     request += 1;
   }
-
   const session = {
-    preview,
-    execute,
+    run,
     cancelRemaining,
-    acknowledge(value: boolean) {
-      if (
-        live &&
-        state.phase === "ready" &&
-        state.preview?.items.some((item) => item.allowed)
-      )
-        update({ ...state, acknowledged: value });
-    },
     close() {
       if (!live || state.phase === "executing") return false;
       dispose();
@@ -179,6 +158,6 @@ export function createRecycleSession({
     },
     dispose,
   };
-  void preview();
+  void run();
   return session;
 }

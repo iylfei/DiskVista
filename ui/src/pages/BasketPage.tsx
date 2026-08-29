@@ -103,7 +103,7 @@ export default function BasketPage({
           disabled={!items.length || busy || !!confirmation || addingCount > 0}
           onClick={openConfirmation}
         >
-          {busy ? "正在移入回收站…" : "检查并移入回收站"}
+          {busy ? "正在移入回收站…" : "移入回收站"}
         </button>
       </div>
       {confirmation && (confirmation.scanId === scanId || busy) && (

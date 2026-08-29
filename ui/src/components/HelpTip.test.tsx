@@ -73,7 +73,8 @@ describe("plain-language help", () => {
         onError={() => {}}
       />,
     );
-    expect(html).toContain("检查并移入回收站");
+    expect(html).toContain("移入回收站");
+    expect(html).not.toContain("检查并移入回收站");
     expect(html).not.toContain("先预览，再确认");
     expect(html).not.toContain("需要你确认");
     expect(html).toContain("去查看清理建议");
