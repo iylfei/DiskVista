@@ -53,6 +53,7 @@ import { version as appVersion } from "../../package.json";
 import { sameSnapshot, startScanPolling } from "./lib/scanPolling";
 import { mergeFileDetail } from "./lib/fileDetail";
 import { afterScanDeletion, excludeDeletedScans } from "./lib/scanRecords";
+import { normalizeLanguage, setLanguage, type Language } from "./i18n/locale";
 
 const navigation = [
   ["overview", "总览", LayoutDashboard],
@@ -66,6 +67,7 @@ const navigation = [
 ] as const;
 type Page = (typeof navigation)[number][0];
 export default function App() {
+  const [language, setAppLanguage] = useState<Language>("zh-CN");
   const [boot, setBoot] = useState<Bootstrap | null>(null);
   const [error, setError] = useState("");
   const [page, setPage] = useState<Page>("overview");
@@ -142,6 +144,9 @@ export default function App() {
   useEffect(() => {
     api<Bootstrap>("bootstrap")
       .then((b) => {
+        const language = normalizeLanguage(b.settings.language);
+        setLanguage(language);
+        setAppLanguage(language);
         setBoot(b);
         if (b.scans[0]) {
           setScan(b.scans[0]);
@@ -341,6 +346,9 @@ export default function App() {
     }
   }
   function save(settings: Settings) {
+    const language = normalizeLanguage(settings.language);
+    setLanguage(language);
+    setAppLanguage(language);
     setBoot((b) => (b ? { ...b, settings } : b));
     api<Bootstrap>("bootstrap")
       .then((b) => setBoot(excludeDeletedScans(b, deletedScans.current)))
@@ -379,7 +387,7 @@ export default function App() {
   const title = navigation.find((n) => n[0] === page)?.[1];
   const analysisMessageKey = `${analysis?.scanId}:${analysis?.message}`;
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-language={language}>
       <TitleBar onError={fail} />
       <aside className="sidebar">
         <div className="brand">

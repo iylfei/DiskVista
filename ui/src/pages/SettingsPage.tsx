@@ -11,6 +11,7 @@ import {
   parseMaxOutputTokens,
   settingsWithOutputLimit,
 } from "../lib/settingsValidation";
+import { normalizeLanguage, setLanguage } from "../i18n/locale";
 export default function SettingsPage({
   settings,
   hasKey,
@@ -24,6 +25,7 @@ export default function SettingsPage({
 }) {
   const [draft, setDraft] = useState<Settings>(() => {
     const value = structuredClone(settings);
+    value.language = normalizeLanguage(value.language);
     value.llm.maxOutputTokens ??= DEFAULT_MAX_OUTPUT_TOKENS;
     return value;
   });
@@ -87,8 +89,45 @@ export default function SettingsPage({
       setPending(null);
     }
   }
+  async function changeLanguage(value: string) {
+    const language = normalizeLanguage(value);
+    const previous = normalizeLanguage(settings.language);
+    setDraft((current) => ({ ...current, language }));
+    setLanguage(language);
+    setPending("save");
+    try {
+      const saved = await api<Settings>("save_settings", {
+        settings: { ...settings, language },
+        key: null,
+      });
+      onSave(saved);
+    } catch (error) {
+      setDraft((current) => ({ ...current, language: previous }));
+      setLanguage(previous);
+      onError(error);
+    } finally {
+      setPending(null);
+    }
+  }
   return (
     <div className="settings-content">
+      <section className="panel">
+        <h2>界面语言</h2>
+        <label htmlFor="interface-language">
+          <span>语言</span>
+          <select
+            id="interface-language"
+            value={draft.language}
+            disabled={busy}
+            onChange={(event) => {
+              void changeLanguage(event.target.value);
+            }}
+          >
+            <option value="zh-CN">简体中文</option>
+            <option value="en">English</option>
+          </select>
+        </label>
+      </section>
       <section className="panel">
         <h2>扫描设置</h2>
         <label className="check-line" htmlFor="enhanced-scan">

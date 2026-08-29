@@ -10,6 +10,7 @@ import { canExpand } from "../lib/applicationTree";
 import { componentCleanupBlockReason } from "../lib/cleanupTarget";
 import type { ApplicationUnit, UnitComponent } from "../lib/types";
 import AddToBasketButton from "./AddToBasketButton";
+import { localeName } from "../i18n/locale";
 
 const roleName: Record<string, string> = {
   installation: "安装文件",
@@ -66,7 +67,7 @@ export function UnitSummary({
         <strong>{bytes(unit.occupiedBytes)}</strong>
       </span>
       <span className="unit-count">
-        {unit.fileCount.toLocaleString()} 个文件
+        {unit.fileCount.toLocaleString(localeName())} 个文件
       </span>
       <span className="unit-action">
         {expandable
@@ -117,7 +118,7 @@ export function ComponentSummary({
           <strong>{bytes(component.occupiedBytes)}</strong>
         </span>
         <span className="unit-count">
-          {component.fileCount.toLocaleString()} 个文件
+          {component.fileCount.toLocaleString(localeName())} 个文件
         </span>
         <span className="unit-action">查看文件</span>
       </button>

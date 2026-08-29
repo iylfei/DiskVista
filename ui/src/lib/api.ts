@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { localeName } from "../i18n/locale";
 export const api = <T>(command: string, args: Record<string, unknown> = {}) => {
   if (!("__TAURI_INTERNALS__" in window))
     return Promise.reject<T>(
@@ -14,15 +15,15 @@ export function bytes(value: number | null | undefined) {
     Math.floor(Math.log(Math.max(1, value)) / Math.log(1024)),
     4,
   );
-  return `${(value / 1024 ** i).toLocaleString("zh-CN", { maximumFractionDigits: i > 1 ? 1 : 0 })} ${units[i]}`;
+  return `${(value / 1024 ** i).toLocaleString(localeName(), { maximumFractionDigits: i > 1 ? 1 : 0 })} ${units[i]}`;
 }
 export const date = (value: number | null | undefined) =>
   value && value > 0
-    ? new Date(value * 1000).toLocaleDateString("zh-CN")
+    ? new Date(value * 1000).toLocaleDateString(localeName())
     : "未知";
 export const dateTime = (value: number | null | undefined) =>
   value && value > 0
-    ? new Date(value * 1000).toLocaleString("zh-CN", {
+    ? new Date(value * 1000).toLocaleString(localeName(), {
         year: "numeric",
         month: "2-digit",
         day: "2-digit",

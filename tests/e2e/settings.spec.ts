@@ -38,3 +38,36 @@ test("partial saves preserve other unfinished inputs", async ({ page }) => {
   await expect(model).toHaveValue("unsaved-model");
   await expect(output).toHaveValue("8192");
 });
+
+test("switches the complete interface to English and saves the choice", async ({
+  page,
+}) => {
+  await openApp(page);
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page
+    .getByRole("combobox", { name: "语言", exact: true })
+    .selectOption("en");
+
+  await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  await expect(page.locator(".app-shell")).toHaveAttribute(
+    "data-language",
+    "en",
+  );
+  await expect(
+    page.getByRole("button", { name: "Overview", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Interface language", exact: true }),
+  ).toBeVisible();
+
+  const savedLanguage = await page.evaluate(() => {
+    const calls = (
+      window as unknown as {
+        __testCalls: { command: string; args: Record<string, any> }[];
+      }
+    ).__testCalls;
+    return calls.filter((call) => call.command === "save_settings").at(-1)?.args
+      .settings.language;
+  });
+  expect(savedLanguage).toBe("en");
+});

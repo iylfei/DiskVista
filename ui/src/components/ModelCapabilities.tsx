@@ -1,6 +1,7 @@
 import { identifyModel } from "../lib/modelCatalog";
 import { parseMaxOutputTokens } from "../lib/settingsValidation";
 import "./model-capabilities.css";
+import { localeName } from "../i18n/locale";
 
 interface Props {
   baseUrl: string;
@@ -15,7 +16,7 @@ interface Props {
 }
 
 const tokens = (value: number | null) =>
-  value === null ? "未收录" : `${value.toLocaleString("zh-CN")} token`;
+  value === null ? "未收录" : `${value.toLocaleString(localeName())} token`;
 
 export default function ModelCapabilities({
   baseUrl,

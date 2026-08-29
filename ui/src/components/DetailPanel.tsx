@@ -10,6 +10,7 @@ import {
   ListPlus,
 } from "lucide-react";
 import { api, bytes, date, riskText } from "../lib/api";
+import { localeName } from "../i18n/locale";
 import type { FileRecord, AnalysisContext, AnalysisResult } from "../lib/types";
 import Modal from "./Modal";
 import HelpTip from "./HelpTip";
@@ -178,7 +179,7 @@ export default function DetailPanel({
               {file.allocatedBytes === null ? "（无法精确计算）" : ""}
             </dd>
             <dt>文件数量</dt>
-            <dd>{file.fileCount.toLocaleString()}</dd>
+            <dd>{file.fileCount.toLocaleString(localeName())}</dd>
             <dt>
               {["application_container", "system"].includes(a.category)
                 ? "目录类型"

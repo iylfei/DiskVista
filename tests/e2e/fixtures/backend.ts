@@ -38,6 +38,7 @@ export function installBackend(
     hasKey: true,
     accessPolicy: "",
     settings: {
+      language: "zh-CN",
       scanRetention: 0,
       enhancedScan: false,
       communityEnabled: false,

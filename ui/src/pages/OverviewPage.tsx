@@ -10,6 +10,7 @@ import type { Scan, Volume, ScanLocation } from "../lib/types";
 import { bytes, date, statusText } from "../lib/api";
 import HelpTip from "../components/HelpTip";
 import { helpText } from "../lib/helpText";
+import { localeName } from "../i18n/locale";
 import ScanIssues from "../components/ScanIssues";
 export default function OverviewPage({
   volumes,
@@ -144,7 +145,7 @@ export default function OverviewPage({
                   </span>
                 </div>
                 <div>
-                  <strong>{scan.files.toLocaleString()}</strong>
+                  <strong>{scan.files.toLocaleString(localeName())}</strong>
                   <span>文件</span>
                 </div>
                 <div>

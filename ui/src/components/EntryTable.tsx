@@ -10,6 +10,7 @@ import { useAnalysisSummaries } from "../lib/useAnalysisSummaries";
 import FileAnalysisBadge from "./FileAnalysisBadge";
 import AddToBasketButton from "./AddToBasketButton";
 import { fileCleanupBlockReason } from "../lib/cleanupTarget";
+import { localeName } from "../i18n/locale";
 interface Props {
   scanId: string;
   analysisRevision?: string;
@@ -185,7 +186,7 @@ export default function EntryTable({
       </div>
       <div className="table-footer">
         <span>
-          共 {total.toLocaleString()} 项 · 每页 100 项
+          共 {total.toLocaleString(localeName())} 项 · 每页 100 项
           {summariesFailed && (
             <small className="summary-load-error">
               AI 标识暂不可用，仍可打开详情查看

@@ -2,6 +2,7 @@ import { ArrowLeft, ArrowRight, FileSearch, FolderClock } from "lucide-react";
 import type { SuggestionGroup } from "../lib/types";
 import { bytes } from "../lib/api";
 import HelpTip from "./HelpTip";
+import { localeName } from "../i18n/locale";
 
 export function SuggestionListHeader({
   group,
@@ -71,7 +72,9 @@ export default function SuggestionGroups({
               {bytes(group.occupiedBytes)}
               {group.estimated ? "（估算）" : ""}
             </strong>
-            <small>{group.count.toLocaleString()} 个文件或文件夹</small>
+            <small>
+              {group.count.toLocaleString(localeName())} 个文件或文件夹
+            </small>
             <button onClick={() => onOpen(group.id)}>
               查看文件
               <ArrowRight size={14} />

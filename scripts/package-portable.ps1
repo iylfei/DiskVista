@@ -23,15 +23,18 @@ New-Item -ItemType Directory -Path $portable -Force | Out-Null
 foreach ($name in @('diskvista.exe', 'diskvista-worker.exe')) {
     Copy-Item -LiteralPath (Join-Path $artifactRoot $name) -Destination $portable
 }
-foreach ($name in @('README.md', 'third-party')) {
+foreach ($name in @('README.md', 'README.zh-CN.md', 'third-party')) {
     Copy-Item -LiteralPath (Join-Path $projectRoot $name) -Destination $portable -Recurse
 }
 $zip = Join-Path $artifactRoot "DiskVista-$Version-win-x64.zip"
 Compress-Archive -LiteralPath $portable -DestinationPath $zip -CompressionLevel Optimal -Force -WarningAction SilentlyContinue
-$hashes = Get-ChildItem -LiteralPath $artifactRoot -File |
-    Where-Object { $_.Extension -in @('.exe', '.zip') } |
-    Sort-Object Name |
-    Get-FileHash -Algorithm SHA256
+$releaseFiles = @(
+    Join-Path $artifactRoot "DiskVista_${Version}_x64-setup.exe"
+    Join-Path $artifactRoot "DiskVista-$Version-win-x64.zip"
+)
+$hashes = $releaseFiles |
+    ForEach-Object { Get-FileHash -LiteralPath $_ -Algorithm SHA256 } |
+    Sort-Object Path
 $lines = @($hashes | ForEach-Object { $_.Hash.ToLowerInvariant() + '  ' + [IO.Path]::GetFileName($_.Path) })
 [IO.File]::WriteAllLines((Join-Path $artifactRoot 'SHA256SUMS.txt'), $lines, [Text.UTF8Encoding]::new($false))
 $hashes | Format-Table -AutoSize

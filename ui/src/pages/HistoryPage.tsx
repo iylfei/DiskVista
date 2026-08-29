@@ -9,6 +9,7 @@ import {
 } from "../lib/historyPaging";
 import CleanupResult from "../components/CleanupResult";
 import "./history.css";
+import { localeName } from "../i18n/locale";
 
 export function HistoryPageView({
   state,
@@ -62,8 +63,8 @@ export function HistoryPageView({
               <div>
                 <strong className="path-text">{h.path}</strong>
                 <small>
-                  {new Date(h.time * 1000).toLocaleString("zh-CN")} · 文件占用约{" "}
-                  {bytes(h.bytes)}
+                  {new Date(h.time * 1000).toLocaleString(localeName())} ·
+                  文件占用约 {bytes(h.bytes)}
                 </small>
                 {h.status !== "recycled" && <p>{h.message}</p>}
               </div>
@@ -79,7 +80,7 @@ export function HistoryPageView({
       <div className="table-footer" aria-label="操作历史分页">
         <span>
           {state.total !== null
-            ? `共 ${state.total.toLocaleString()} 条 · `
+            ? `共 ${state.total.toLocaleString(localeName())} 条 · `
             : ""}
           每页 {HISTORY_PAGE_SIZE} 条
         </span>

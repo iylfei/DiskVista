@@ -7,6 +7,7 @@ import { useSpaceMap } from "../lib/useSpaceMap";
 import { useSpaceMapMenu } from "./SpaceMapMenu";
 import HelpTip from "./HelpTip";
 import { helpText } from "../lib/helpText";
+import { localeName } from "../i18n/locale";
 
 export default function SpaceMap({
   scanId,
@@ -174,7 +175,9 @@ export default function SpaceMap({
         {hover && totalBytes > 0 && (
           <span>{((hover.logicalBytes / totalBytes) * 100).toFixed(1)}%</span>
         )}
-        {!hover && data && <span>{data.total.toLocaleString()} 项</span>}
+        {!hover && data && (
+          <span>{data.total.toLocaleString(localeName())} 项</span>
+        )}
         {data && !data.parent.complete && <span>未扫描完整</span>}
       </div>
       {menu.element}

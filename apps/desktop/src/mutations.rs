@@ -46,6 +46,11 @@ pub async fn save_settings(
         }
         cleaner_llm::client::validate_output_limit(settings.llm.max_output_tokens)
             .map_err(error)?;
+        settings.language = if settings.language == "en" {
+            "en".into()
+        } else {
+            "zh-CN".into()
+        };
         settings.scan_retention = if settings.scan_retention == 0 {
             0
         } else {

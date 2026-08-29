@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { HardDrive, Square } from "lucide-react";
 import type { Scan } from "../lib/types";
 import { bytes } from "../lib/api";
+import { localeName } from "../i18n/locale";
 
 export default function ScanProgress({
   scan,
@@ -29,7 +30,8 @@ export default function ScanProgress({
         <strong>{phase}</strong>
         <span className="path-text">{scan.root}</span>
         <span>
-          {scan.files.toLocaleString()} 个文件 · {bytes(scan.logicalBytes)}
+          {scan.files.toLocaleString(localeName())} 个文件 ·{" "}
+          {bytes(scan.logicalBytes)}
         </span>
         <button onClick={onCancel}>
           <Square size={12} />

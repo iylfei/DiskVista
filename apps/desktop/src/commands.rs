@@ -100,12 +100,22 @@ pub async fn runtime_status(
     .await
 }
 #[tauri::command]
-pub async fn choose_folder() -> Option<String> {
-    rfd::AsyncFileDialog::new()
-        .set_title("选择要分析的本地目录")
+pub async fn choose_folder(state: State<'_, Shared>) -> Result<Option<String>, String> {
+    let state = state.inner().clone();
+    let title = if state
+        .store
+        .settings()
+        .is_ok_and(|settings| settings.language == "en")
+    {
+        "Select a local folder to analyze"
+    } else {
+        "选择要分析的本地目录"
+    };
+    Ok(rfd::AsyncFileDialog::new()
+        .set_title(title)
         .pick_folder()
         .await
-        .map(|p| p.path().to_string_lossy().into_owned())
+        .map(|p| p.path().to_string_lossy().into_owned()))
 }
 fn worker_path() -> Result<std::path::PathBuf, String> {
     let exe = std::env::current_exe().map_err(error)?;
