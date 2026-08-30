@@ -53,6 +53,13 @@ function interfaceText(path: string): string[] {
 }
 
 describe("English interface text", () => {
+  it("translates whitespace-wrapped fragments and dynamic scan messages", () => {
+    expect(englishText(" 可用 ")).toBe(" Available ");
+    expect(englishText("正在分析本批 20 个文件…")).toBe(
+      "Analyzing this batch of 20 files…",
+    );
+  });
+
   it("covers every Chinese user-facing string in production UI sources", () => {
     const missing = new Set<string>();
     for (const value of sourceFiles(sourceRoot).flatMap(interfaceText)) {

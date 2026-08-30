@@ -65,6 +65,7 @@ const exactEnglish: Record<string, string> = {
   "查看 {1}": "View {1}",
   "查看 AI 分析：{1}": "View AI analysis: {1}",
   查看结果: "View results",
+  查看下载中的大文件: "Find large files in Downloads",
   查看空间地图: "View space map",
   "查看每个文件的处理结果。": "View the result for each file.",
   查看全部文件: "View all files",
@@ -186,6 +187,7 @@ const exactEnglish: Record<string, string> = {
     "The recycling check no longer matches the current list. Try again.",
   回收历史参考: "Recycling history references",
   基于扫描记录: "Based on scan records",
+  检查临时文件: "Check temporary files",
   加入待清理清单: "Add to cleanup list",
   "加入待清理清单 {1}": "Add {1} to cleanup list",
   "兼容 API 地址": "Compatible API address",
@@ -584,6 +586,9 @@ const exactEnglish: Record<string, string> = {
   正在汇总: "Summarizing",
   "正在汇总目录空间…": "Summarizing folder space…",
   正在汇总占用和用途: "Summarizing usage and purpose",
+  "正在分析本批 {1} 个文件…": "Analyzing this batch of {1} files…",
+  "正在准备 {1} 个文件的批量分析…": "Preparing batch analysis for {1} files…",
+  "正在按目录组织批量分析…": "Organizing batch analysis by folder…",
   "正在解除…": "Removing…",
   "正在进行安全检查，通过后将直接移入回收站…":
     "Running safety checks. Approved items will be moved directly to the Recycle Bin…",
@@ -608,6 +613,7 @@ const exactEnglish: Record<string, string> = {
     "Read only small text snippets selected for this request: up to four UTF-8 text files, 4 KiB each. UTF-8 is a common text encoding. Unsupported files and sensitive content such as passwords and wallets are never sampled. Sending still requires your confirmation after previewing the content.",
   "只分析超过门槛的文件，不包含目录或已明确所属应用的文件。按目录分批分析，每个文件给出删除建议与简短理由。":
     "Analyze only files above the threshold, excluding folders and files already linked to applications. Files are analyzed in folder-based batches, with deletion advice and a short reason for each.",
+  只扫描当前用户的临时文件夹: "Scan only the current user's temporary folder",
   置信度: "Confidence",
   中: "Medium",
   重试: "Retry",
@@ -712,6 +718,8 @@ const exactEnglish: Record<string, string> = {
   本地判断: "Local assessment",
   扫描摘要: "Scan summary",
   扫描文件: "Scanned file",
+  "扫描下载文件夹，查找安装包、视频等大文件":
+    "Scan Downloads for installers, videos, and other large files",
   成功回收记录: "Successful recycling record",
   上次扫描记录: "Previous scan record",
   "Windows 卸载清单": "Windows uninstall registry",
@@ -889,11 +897,15 @@ const templateEnglish = Object.entries(exactEnglish)
   .sort(([left], [right]) => right.length - left.length);
 
 export function englishText(value: string): string {
-  const exact = exactEnglish[value];
-  if (exact !== undefined) return exact;
+  const match = /^(\s*)(.*?)(\s*)$/s.exec(value);
+  const leading = match?.[1] ?? "";
+  const core = match?.[2] ?? value;
+  const trailing = match?.[3] ?? "";
+  const exact = exactEnglish[core];
+  if (exact !== undefined) return `${leading}${exact}${trailing}`;
   for (const [source, target] of templateEnglish) {
-    const translated = fromTemplate(source, target, value);
-    if (translated !== null) return translated;
+    const translated = fromTemplate(source, target, core);
+    if (translated !== null) return `${leading}${translated}${trailing}`;
   }
   return value;
 }

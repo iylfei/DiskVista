@@ -11,6 +11,7 @@ import { componentCleanupBlockReason } from "../lib/cleanupTarget";
 import type { ApplicationUnit, UnitComponent } from "../lib/types";
 import AddToBasketButton from "./AddToBasketButton";
 import { localeName } from "../i18n/locale";
+import { translateText } from "../i18n/translate";
 
 const roleName: Record<string, string> = {
   installation: "安装文件",
@@ -42,14 +43,15 @@ export function UnitSummary({
     !unit.complete && "未扫描完整",
     unit.children.length > 0 && "含子项",
   ]
-    .filter(Boolean)
+    .filter((value): value is string => Boolean(value))
+    .map(translateText)
     .join(" · ");
   return (
     <button
       className={`unit-row${note ? " unit-row-with-note" : ""}`}
       onClick={onClick}
       aria-expanded={expandable ? expanded : undefined}
-      aria-label={`${expandable ? (expanded ? "收起" : "展开") : "查看文件"} ${unit.name}`}
+      aria-label={`${translateText(expandable ? (expanded ? "收起" : "展开") : "查看文件")} ${unit.name}`}
     >
       {expandable ? (
         expanded ? (
@@ -67,7 +69,8 @@ export function UnitSummary({
         <strong>{bytes(unit.occupiedBytes)}</strong>
       </span>
       <span className="unit-count">
-        {unit.fileCount.toLocaleString(localeName())} 个文件
+        {unit.fileCount.toLocaleString(localeName())}{" "}
+        {translateText("个文件").trim()}
       </span>
       <span className="unit-action">
         {expandable
@@ -118,7 +121,8 @@ export function ComponentSummary({
           <strong>{bytes(component.occupiedBytes)}</strong>
         </span>
         <span className="unit-count">
-          {component.fileCount.toLocaleString(localeName())} 个文件
+          {component.fileCount.toLocaleString(localeName())}{" "}
+          {translateText("个文件").trim()}
         </span>
         <span className="unit-action">查看文件</span>
       </button>

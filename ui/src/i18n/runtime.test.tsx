@@ -11,4 +11,11 @@ describe("localized JSX runtime", () => {
       renderToStaticMarkup(<button aria-label="关闭窗口">总览</button>),
     ).toBe('<button aria-label="Close window">Overview</button>');
   });
+
+  it("translates JSX fragments separated by expressions", () => {
+    setLanguage("en");
+    expect(renderToStaticMarkup(<span>可用 {42} GiB</span>)).toBe(
+      "<span>Available 42 GiB</span>",
+    );
+  });
 });

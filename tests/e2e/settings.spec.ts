@@ -42,7 +42,7 @@ test("partial saves preserve other unfinished inputs", async ({ page }) => {
 test("switches the complete interface to English and saves the choice", async ({
   page,
 }) => {
-  await openApp(page);
+  await openApp(page, { active: true });
   await page.getByRole("button", { name: "设置", exact: true }).click();
   await page
     .getByRole("combobox", { name: "语言", exact: true })
@@ -70,4 +70,51 @@ test("switches the complete interface to English and saves the choice", async ({
       .settings.language;
   });
   expect(savedLanguage).toBe("en");
+
+  await page.getByRole("button", { name: "Overview", exact: true }).click();
+  await expect(
+    page.getByText("Analyzing this batch of 20 files…"),
+  ).toBeVisible();
+  await expect(page.locator(".scan-picker-trigger")).toContainText(
+    "Scan complete",
+  );
+  await expect(page.getByText("Find large files in Downloads")).toBeVisible();
+  await expect(page.getByText("Check temporary files")).toBeVisible();
+  await expect(page.getByText(/^Available 59\.3 GiB$/)).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "View results" }),
+  ).toBeVisible();
+
+  const sidebarLayout = await page.locator(".sidebar").evaluate((sidebar) => {
+    const icons = [...sidebar.querySelectorAll("nav button > svg")].map(
+      (icon) => icon.getBoundingClientRect().width,
+    );
+    const cleanupLabel = [
+      ...sidebar.querySelectorAll("nav button > span"),
+    ].find((label) => label.textContent === "Cleanup Suggestions");
+    const subtitle = sidebar.querySelector(".brand span:not(.brand-icon)");
+    return {
+      clientWidth: sidebar.clientWidth,
+      scrollWidth: sidebar.scrollWidth,
+      icons,
+      cleanupLabelHeight: cleanupLabel?.getBoundingClientRect().height ?? 0,
+      subtitleHeight: subtitle?.getBoundingClientRect().height ?? 0,
+    };
+  });
+  expect(sidebarLayout.scrollWidth).toBeLessThanOrEqual(
+    sidebarLayout.clientWidth,
+  );
+  expect(Math.min(...sidebarLayout.icons)).toBeGreaterThanOrEqual(17.5);
+  expect(sidebarLayout.cleanupLabelHeight).toBeGreaterThan(20);
+  expect(sidebarLayout.subtitleHeight).toBeGreaterThan(20);
+
+  await page
+    .getByRole("button", { name: "Application Space", exact: true })
+    .click();
+  await expect(page.locator(".scan-summary")).toContainText("Total file size");
+  await expect(page.locator(".scan-summary")).toContainText(
+    "2 locations could not be scanned",
+  );
+  await expect(page.getByText("Estimated · Incomplete scan")).toBeVisible();
+  await expect(page.getByText("Total 458 items")).toBeVisible();
 });

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { localeName } from "../i18n/locale";
+import { translateText } from "../i18n/translate";
 export const api = <T>(command: string, args: Record<string, unknown> = {}) => {
   if (!("__TAURI_INTERNALS__" in window))
     return Promise.reject<T>(
@@ -33,24 +34,28 @@ export const dateTime = (value: number | null | undefined) =>
       })
     : "未知";
 export const riskText = (risk: string) =>
-  ({
-    low: "较低风险",
-    review: "需要你确认",
-    protected: "受保护",
-    keep: "建议保留",
-    unknown: "未知",
-  })[risk] ?? "未知";
+  translateText(
+    {
+      low: "较低风险",
+      review: "需要你确认",
+      protected: "受保护",
+      keep: "建议保留",
+      unknown: "未知",
+    }[risk] ?? "未知",
+  );
 export const statusText = (status: string) =>
-  ({
-    queued: "准备扫描",
-    scanning: "扫描中",
-    aggregating: "正在汇总",
-    complete: "扫描完成",
-    cancelled: "已取消",
-    interrupted: "未完成",
-    failed: "失败",
-    recycled: "已移入回收站",
-    skipped: "已跳过",
-    success: "分析完成",
-    stale: "已过期",
-  })[status] ?? status;
+  translateText(
+    {
+      queued: "准备扫描",
+      scanning: "扫描中",
+      aggregating: "正在汇总",
+      complete: "扫描完成",
+      cancelled: "已取消",
+      interrupted: "未完成",
+      failed: "失败",
+      recycled: "已移入回收站",
+      skipped: "已跳过",
+      success: "分析完成",
+      stale: "已过期",
+    }[status] ?? status,
+  );

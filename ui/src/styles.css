@@ -142,12 +142,16 @@ code {
   background: #fafbfc;
   padding: 28px 14px 19px;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 .brand {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 0 11px 35px;
+}
+.brand > div {
+  min-width: 0;
 }
 .brand-icon {
   width: 38px;
@@ -191,6 +195,26 @@ code {
   border-color: transparent;
   background: transparent;
   color: #697380;
+}
+.sidebar nav button > svg {
+  flex: 0 0 auto;
+}
+.sidebar nav button > span {
+  min-width: 0;
+  white-space: normal;
+  line-height: 1.35;
+  text-align: left;
+}
+.app-shell[data-language="en"] .brand {
+  gap: 8px;
+  padding-right: 7px;
+  padding-left: 7px;
+}
+.app-shell[data-language="en"] .brand span:not(.brand-icon) {
+  max-width: 88px;
+  white-space: normal;
+  line-height: 1.35;
+  letter-spacing: 0.4px;
 }
 .sidebar nav button:hover {
   background: #f0f3f6;

@@ -2,6 +2,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { CircleHelp } from "lucide-react";
 import { helpPosition } from "../lib/helpPosition";
+import { translateText } from "../i18n/translate";
 import "./help.css";
 
 /** An explanation, never the only place for a warning or a required instruction. */
@@ -21,6 +22,8 @@ export default function HelpTip({
     left: number;
     top: number;
   } | null>(null);
+  const localizedLabel = translateText(label);
+  const localizedText = translateText(text);
   function cancelClose() {
     if (timer.current !== null) clearTimeout(timer.current);
     timer.current = null;
@@ -99,7 +102,7 @@ export default function HelpTip({
           ref={trigger}
           type="button"
           className="help-trigger"
-          aria-label={`关于${label}`}
+          aria-label={translateText(`关于${localizedLabel}`)}
           aria-describedby={open ? id : undefined}
           onPointerEnter={show}
           onPointerLeave={scheduleClose}
@@ -129,8 +132,8 @@ export default function HelpTip({
             onPointerEnter={cancelClose}
             onPointerLeave={scheduleClose}
           >
-            <strong>{label}</strong>
-            <p>{text}</p>
+            <strong>{localizedLabel}</strong>
+            <p>{localizedText}</p>
           </div>,
           // A modal makes the rest of the document inert. Keep its help inside it.
           trigger.current?.closest("dialog") ?? document.body,

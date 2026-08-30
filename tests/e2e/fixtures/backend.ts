@@ -19,13 +19,35 @@ export function installBackend(
     directories: 1,
     logicalBytes: 4096,
     allocatedBytes: 4096,
-    issues: 0,
+    issues: 2,
     mode: "完整扫描",
     message: "",
   };
   const boot: Bootstrap = {
-    volumes: [],
-    scanLocations: [],
+    volumes: [
+      {
+        path: "C:\\",
+        label: "本地磁盘",
+        fileSystem: "NTFS",
+        totalBytes: 322122547200,
+        freeBytes: 63672852480,
+        removable: false,
+      },
+    ],
+    scanLocations: [
+      {
+        id: "downloads",
+        name: "查看下载中的大文件",
+        path: "C:\\Users\\tester\\Downloads",
+        description: "扫描下载文件夹，查找安装包、视频等大文件",
+      },
+      {
+        id: "temp",
+        name: "检查临时文件",
+        path: "C:\\Users\\tester\\AppData\\Local\\Temp",
+        description: "只扫描当前用户的临时文件夹",
+      },
+    ],
     scans: [
       scan,
       {
@@ -66,11 +88,11 @@ export function installBackend(
     analysisProgress: {
       scanId: "current",
       active: !!options.active,
-      queued: 0,
-      finished: 0,
-      requests: 0,
+      queued: options.active ? 99 : 0,
+      finished: options.active ? 40 : 0,
+      requests: options.active ? 9 : 0,
       maxRequests: 10,
-      message: "",
+      message: options.active ? "正在分析本批 20 个文件…" : "",
     },
   };
   const original = structuredClone(boot);
@@ -126,6 +148,40 @@ export function installBackend(
           return { groups: [], items: [], total: 0 };
         case "analysis_summaries":
           return [];
+        case "application_units":
+          return {
+            items: [
+              {
+                id: "application-verifier",
+                name: "Application Verifier (X64)",
+                kind: "application",
+                confidence: "medium",
+                logicalBytes: 11703785882,
+                occupiedBytes: 11703785882,
+                fileCount: 109,
+                estimated: true,
+                complete: false,
+                components: [
+                  {
+                    entryId: 1,
+                    path: "C:\\Program Files\\Application Verifier",
+                    role: "installation",
+                    evidence: "Windows 卸载清单",
+                    logicalBytes: 11703785882,
+                    occupiedBytes: 11703785882,
+                    fileCount: 109,
+                    protected: true,
+                  },
+                ],
+                children: [],
+              },
+            ],
+            total: 458,
+            applications: 1,
+            uncertain: 827,
+            occupiedBytes: 248786740019,
+            estimated: true,
+          };
         default:
           throw new Error(`Unexpected test command: ${command}`);
       }

@@ -15,6 +15,7 @@ import ApplicationFileView from "./ApplicationFileView";
 import HelpTip from "./HelpTip";
 import AddToBasketButton from "./AddToBasketButton";
 import { helpText } from "../lib/helpText";
+import { translateText } from "../i18n/translate";
 import "./units.css";
 
 export { UnitSummary } from "./ApplicationUnitRow";
@@ -204,8 +205,8 @@ export default function ApplicationUnits({
         </div>
         {data && (
           <span className="unit-total">
-            合计 {bytes(data.occupiedBytes)}
-            {data.estimated ? "（估算）" : ""}
+            {translateText("合计")} {bytes(data.occupiedBytes)}
+            {data.estimated ? translateText("（估算）") : ""}
             <HelpTip label="实际占用" text={helpText.diskUsage} />
           </span>
         )}
@@ -325,7 +326,8 @@ export default function ApplicationUnits({
       </div>
       <div className="table-footer">
         <span>
-          共 {data?.total ?? 0} 项{expanded.size > 0 ? " · 已展开子项" : ""}
+          {translateText("共")} {data?.total ?? 0} {translateText("项").trim()}
+          {expanded.size > 0 ? translateText(" · 已展开子项") : ""}
         </span>
         <div>
           <button

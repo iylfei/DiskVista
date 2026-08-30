@@ -12,6 +12,7 @@ import HelpTip from "../components/HelpTip";
 import { helpText } from "../lib/helpText";
 import { localeName } from "../i18n/locale";
 import ScanIssues from "../components/ScanIssues";
+import { translateText } from "../i18n/translate";
 export default function OverviewPage({
   volumes,
   scan,
@@ -82,8 +83,8 @@ export default function OverviewPage({
             >
               <FolderSearch size={20} />
               <span>
-                <strong>{location.name}</strong>
-                <small>{location.description}</small>
+                <strong>{translateText(location.name)}</strong>
+                <small>{translateText(location.description)}</small>
               </span>
               <ArrowRight size={16} />
             </button>
@@ -114,8 +115,12 @@ export default function OverviewPage({
               />
             </div>
             <footer>
-              <span>可用 {bytes(v.freeBytes)}</span>
-              <span>共 {bytes(v.totalBytes)}</span>
+              <span>
+                {translateText("可用")} {bytes(v.freeBytes)}
+              </span>
+              <span>
+                {translateText("共")} {bytes(v.totalBytes)}
+              </span>
             </footer>
             <small>
               {v.fileSystem} · {v.removable ? "外接存储" : "固定磁盘"}
@@ -129,7 +134,7 @@ export default function OverviewPage({
             <h2>当前扫描</h2>
             {scan && (
               <button onClick={onMap}>
-                查看结果 <ArrowRight size={14} />
+                {translateText("查看结果")} <ArrowRight size={14} />
               </button>
             )}
           </div>
@@ -168,9 +173,12 @@ export default function OverviewPage({
                 </div>
               </div>
               <p className="muted">
-                {statusText(scan.status)} · {date(scan.started)} · {scan.mode}
+                {statusText(scan.status)} · {date(scan.started)} ·{" "}
+                {translateText(scan.mode)}
               </p>
-              {scan.status !== "complete" && <p>{scan.message}</p>}
+              {scan.status !== "complete" && (
+                <p>{translateText(scan.message)}</p>
+              )}
             </>
           ) : (
             <div className="empty compact">

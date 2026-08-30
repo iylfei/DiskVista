@@ -54,6 +54,7 @@ import { sameSnapshot, startScanPolling } from "./lib/scanPolling";
 import { mergeFileDetail } from "./lib/fileDetail";
 import { afterScanDeletion, excludeDeletedScans } from "./lib/scanRecords";
 import { normalizeLanguage, setLanguage, type Language } from "./i18n/locale";
+import { translateText } from "./i18n/translate";
 
 const navigation = [
   ["overview", "总览", LayoutDashboard],
@@ -484,9 +485,9 @@ export default function App() {
               <span>
                 {analysis.active
                   ? `AI 分析：已处理 ${analysis.finished}/${analysis.queued} 项，请求 ${analysis.requests}/${analysis.maxRequests}`
-                  : analysis.message}
+                  : translateText(analysis.message)}
                 {analysis.active && analysis.message && (
-                  <small>{analysis.message}</small>
+                  <small>{translateText(analysis.message)}</small>
                 )}
                 {!analysis.active && analysis.finished > 0 && (
                   <small>分析结果可在对应文件详情的“AI 辅助解释”中查看。</small>
