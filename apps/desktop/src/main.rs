@@ -3,6 +3,7 @@ mod ai;
 mod ai_batch;
 mod analysis_results;
 mod background;
+mod cleanup_checks;
 mod commands;
 mod locations;
 mod mutations;
@@ -50,6 +51,8 @@ fn main() {
             mutations::set_annotation,
             commands::rules,
             operations::preview_cleanup,
+            operations::cleanup_check_progress,
+            operations::cancel_cleanup_check,
             operations::execute_cleanup,
             operations::cancel_cleanup,
             operations::history_page,

@@ -3,6 +3,7 @@ import { FolderSearch, Search } from "lucide-react";
 import type { FileRecord, Scan, SuggestionPage } from "../lib/types";
 import { api } from "../lib/api";
 import { useSearchReady } from "../lib/useSearchReady";
+import { useQueryResult } from "../lib/useQueryResult";
 import { suggestionEmpty } from "../lib/emptyState";
 import EntryTable from "../components/EntryTable";
 import AnalysisFilter from "../components/AnalysisFilter";
@@ -38,7 +39,6 @@ export default function SuggestionsPage({
   onRescan: () => void;
   onError: (error: unknown) => void;
 }) {
-  const [data, setData] = useState<SuggestionPage | null>(null);
   const [group, setGroup] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const searchReady = useSearchReady(search);
@@ -68,6 +68,7 @@ export default function SuggestionsPage({
     limit: 100,
   };
   const key = JSON.stringify(query);
+  const [data, setData] = useQueryResult<SuggestionPage>(key);
   const filteredAnalysisRevision = analysisStatus ? analysisRevision : "";
   const requestKey = `${key}:${revision}:${filteredAnalysisRevision}`;
   const current = useRef(requestKey);
@@ -84,7 +85,6 @@ export default function SuggestionsPage({
     if (scan.status !== "complete") return;
     let live = true;
     setBusy(true);
-    setData(null);
     setLoadError(false);
     if (!searchReady) return;
     api<SuggestionPage>("cleanup_suggestions", { query: JSON.parse(key) })
@@ -98,6 +98,7 @@ export default function SuggestionsPage({
       })
       .catch((error) => {
         if (live) {
+          setData(null);
           setLoadError(true);
           onError(error);
         }
@@ -115,6 +116,7 @@ export default function SuggestionsPage({
     revision,
     filteredAnalysisRevision,
     retry,
+    setData,
     onError,
   ]);
   function clear() {
@@ -161,6 +163,9 @@ export default function SuggestionsPage({
     <section className="suggestions-content">
       <p className="suggestions-intro">
         按类别查找文件，勾选后添加到待清理清单。
+        {busy && data && !filesShown && (
+          <span role="status">正在整理清理建议…</span>
+        )}
       </p>
       <div className="list-toolbar file-filters">
         <div className="search-box">
@@ -260,7 +265,7 @@ export default function SuggestionsPage({
           </button>
         </div>
       )}
-      {busy ? (
+      {busy && !data ? (
         <div className="empty compact" role="status">
           正在整理清理建议…
         </div>
@@ -293,15 +298,18 @@ export default function SuggestionsPage({
           onDetail={onDetail}
           onOpen={onOpen}
           quietReview
+          busy={busy || !searchReady}
         />
       ) : (
-        <SuggestionGroups
-          groups={data.groups}
-          onOpen={(id) => {
-            setGroup(id);
-            setPage(0);
-          }}
-        />
+        <div inert={busy || !searchReady} aria-busy={busy}>
+          <SuggestionGroups
+            groups={data.groups}
+            onOpen={(id) => {
+              setGroup(id);
+              setPage(0);
+            }}
+          />
+        </div>
       )}
     </section>
   );

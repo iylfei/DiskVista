@@ -46,6 +46,15 @@ impl Drop for WorkerJob {
 
 /// Restart Manager registers files, not directories. Use the verified descendant list.
 pub fn locking_paths(paths: &[&str]) -> Result<Vec<String>> {
+    locking_paths_checked(paths, |_| Ok(()))
+}
+
+/// Check cancellation between Restart Manager calls and release its session on error.
+pub fn locking_paths_checked(
+    paths: &[&str],
+    mut check: impl FnMut(usize) -> Result<()>,
+) -> Result<Vec<String>> {
+    check(0)?;
     use windows::{
         core::{PCWSTR, PWSTR},
         Win32::System::RestartManager::*,
@@ -65,18 +74,21 @@ pub fn locking_paths(paths: &[&str]) -> Result<Vec<String>> {
         }
     }
     let _guard = Guard(handle);
-    for chunk in paths.chunks(256) {
+    for (index, chunk) in paths.chunks(256).enumerate() {
+        check(index * 256)?;
         let wide: Vec<_> = chunk.iter().map(|p| crate::wide(p)).collect();
         let resources: Vec<_> = wide.iter().map(|p| PCWSTR(p.as_ptr())).collect();
         let result = unsafe { RmRegisterResources(handle, Some(&resources), None, None) };
         if result != ERROR_SUCCESS {
             anyhow::bail!("无法注册占用检查：{}", result.0);
         }
+        check((index * 256 + chunk.len()).min(paths.len()))?;
     }
     let mut needed = 0;
     let mut count = 0;
     let mut reason = 0;
     let first = unsafe { RmGetList(handle, &mut needed, &mut count, None, &mut reason) };
+    check(paths.len())?;
     if first != ERROR_MORE_DATA && first != ERROR_SUCCESS {
         anyhow::bail!("无法检查文件占用：{}", first.0);
     }
@@ -94,6 +106,7 @@ pub fn locking_paths(paths: &[&str]) -> Result<Vec<String>> {
             &mut reason,
         )
     };
+    check(paths.len())?;
     if code != ERROR_SUCCESS {
         anyhow::bail!("占用列表在读取时变化，请稍后重试");
     }

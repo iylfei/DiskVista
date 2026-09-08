@@ -1,7 +1,7 @@
 use crate::{context::fingerprint, safety::SafetyPolicy, store::Store};
 use anyhow::{bail, Result};
 use cleaner_domain::*;
-use cleaner_platform::{filesystem, inventory, normalize, recycle, within};
+use cleaner_platform::{filesystem, inventory, recycle};
 use sha2::{Digest, Sha256};
 use std::{
     collections::VecDeque,
@@ -12,11 +12,22 @@ use std::{
     },
 };
 
+mod preview;
+pub use preview::{preview, preview_with_progress};
+
 pub fn live_tree(path: &str) -> Result<Vec<FileRecord>> {
     live_tree_cancellable(path, &AtomicBool::new(false))
 }
 
 pub fn live_tree_cancellable(path: &str, cancel: &AtomicBool) -> Result<Vec<FileRecord>> {
+    live_tree_with_progress(path, cancel, |_| Ok(()))
+}
+
+fn live_tree_with_progress(
+    path: &str,
+    cancel: &AtomicBool,
+    mut progress: impl FnMut(usize) -> Result<()>,
+) -> Result<Vec<FileRecord>> {
     if cancel.load(Ordering::Relaxed) {
         bail!("用户取消，未处理剩余项目");
     }
@@ -28,6 +39,7 @@ pub fn live_tree_cancellable(path: &str, cancel: &AtomicBool) -> Result<Vec<File
             bail!("用户取消，未处理剩余项目");
         }
         let file = filesystem::inspect(&path)?;
+        progress(out.len() + queue.len() + 1)?;
         if file.identity.is_none() {
             bail!("文件系统未提供可靠身份，无法安全复核此目标");
         }
@@ -56,6 +68,7 @@ pub fn live_tree_cancellable(path: &str, cancel: &AtomicBool) -> Result<Vec<File
                 } else {
                     out.push(child)
                 }
+                progress(out.len() + queue.len())?;
                 Ok(true)
             })?;
         } else {
@@ -76,125 +89,6 @@ fn ensure_not_in_use(live: &[FileRecord]) -> Result<()> {
     }
     Ok(())
 }
-pub fn preview(store: &Store, scan_id: &str, ids: &[i64]) -> Result<CleanupPreview> {
-    store.require_finished(scan_id)?;
-    if ids.is_empty() || ids.len() > 500 {
-        bail!("请在待清理清单中选择 1 到 500 项");
-    }
-    let policy = SafetyPolicy::new(store.settings()?);
-    let rules = crate::rules::RuleSet::load(policy.settings.community_enabled)?;
-    let apps = crate::application_index::ApplicationIndex::new(&store.apps(scan_id)?, &policy);
-    let scan = store.scan(scan_id)?;
-    let mut selected = Vec::new();
-    for id in ids {
-        selected.push(store.entry(scan_id, *id)?);
-    }
-    selected.sort_by_key(|f| f.path.len());
-    selected.dedup_by_key(|f| f.id);
-    let mut items = Vec::new();
-    let mut accepted: Vec<String> = Vec::new();
-    for file in selected {
-        if normalize(&file.path) == normalize(&scan.root) {
-            items.push(blocked(&file, "扫描根目录不能整体回收"));
-            continue;
-        }
-        if accepted.iter().any(|p| within(&file.path, p)) {
-            continue;
-        }
-        let reason = policy
-            .reason(&file)
-            .or_else(|| apps.installed_reason(&file))
-            .or_else(|| {
-                if !file.complete || file.has_blocked_children {
-                    Some("目标或其后代扫描不完整/受保护".into())
-                } else {
-                    None
-                }
-            });
-        if let Some(reason) = reason {
-            items.push(blocked(&file, &reason));
-            continue;
-        }
-        let descendants = match store.descendants_bounded(scan_id, &file.path, 100_000) {
-            Ok(files) => files,
-            Err(e) => {
-                items.push(blocked(&file, &format!("无法核验：{e:#}")));
-                continue;
-            }
-        };
-        let snapshot_fingerprint = fingerprint(&descendants);
-        drop(descendants);
-        let live = match live_tree(&file.path) {
-            Ok(live) => live,
-            Err(e) => {
-                items.push(blocked(&file, &format!("无法核验：{e:#}")));
-                continue;
-            }
-        };
-        let live_fingerprint = fingerprint(&live);
-        if snapshot_fingerprint != live_fingerprint {
-            items.push(blocked(&file, "扫描后目标发生变化，请刷新后重新选择"));
-            continue;
-        }
-        if let Some(reason) = live
-            .iter()
-            .find_map(|f| policy.reason(f).or_else(|| apps.installed_reason(f)))
-        {
-            items.push(blocked(&file, &format!("当前目标包含受保护内容：{reason}")));
-            continue;
-        }
-        if let Err(e) = ensure_not_in_use(&live) {
-            items.push(blocked(&file, &format!("占用检查未通过：{e:#}")));
-            continue;
-        }
-        // Inspect actual link counts at preview; enumerated directory records do not include them.
-        let bytes = live
-            .iter()
-            .filter(|f| !f.is_dir)
-            .filter_map(|f| filesystem::inspect(Path::new(&f.path)).ok())
-            .filter(|f| f.links <= 1)
-            .map(|f| f.allocated_bytes.unwrap_or(f.logical_bytes))
-            .sum();
-        accepted.push(file.path.clone());
-        let risk = rules.classify_indexed(&file, &policy, &apps).risk;
-        items.push(CleanupItem {
-            entry_id: file.id,
-            path: file.path,
-            bytes,
-            fingerprint: live_fingerprint,
-            risk,
-            allowed: true,
-            reason: "已核对当前身份、大小、修改时间、后代、保护状态和占用；执行前仍会再次核验"
-                .into(),
-        });
-    }
-    let pending_bytes = items.iter().filter(|i| i.allowed).map(|i| i.bytes).sum();
-    let requires_extra_confirmation = items.iter().any(|i| i.allowed && i.risk != "low");
-    Ok(CleanupPreview {
-        id: uuid::Uuid::new_v4().to_string(),
-        scan_id: scan_id.into(),
-        created: chrono::Utc::now().timestamp(),
-        items,
-        pending_bytes,
-        requires_extra_confirmation,
-        policy_fingerprint: format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(&policy.settings)?)
-        ),
-    })
-}
-fn blocked(file: &FileRecord, reason: &str) -> CleanupItem {
-    CleanupItem {
-        entry_id: file.id,
-        path: file.path.clone(),
-        bytes: file.allocated_bytes.unwrap_or(file.logical_bytes),
-        fingerprint: String::new(),
-        risk: "protected".into(),
-        allowed: false,
-        reason: reason.into(),
-    }
-}
-
 pub fn execute(
     store: &Store,
     preview: &CleanupPreview,

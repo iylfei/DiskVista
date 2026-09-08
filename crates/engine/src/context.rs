@@ -12,10 +12,20 @@ use sha2::{Digest, Sha256};
 use std::{path::Path, sync::Arc};
 
 pub fn fingerprint(files: &[FileRecord]) -> String {
+    fingerprint_checked(files, || Ok(())).expect("fingerprint without cancellation cannot fail")
+}
+
+pub(crate) fn fingerprint_checked(
+    files: &[FileRecord],
+    mut check: impl FnMut() -> Result<()>,
+) -> Result<String> {
+    check()?;
     let mut rows: Vec<_> = files.iter().collect();
     rows.sort_by_cached_key(|f| normalize(&f.path));
+    check()?;
     let mut hash = Sha256::new();
     for f in rows {
+        check()?;
         hash.update(
             serde_json::to_vec(&(
                 normalize(&f.path),
@@ -28,7 +38,7 @@ pub fn fingerprint(files: &[FileRecord]) -> String {
             .unwrap_or_default(),
         );
     }
-    format!("{:x}", hash.finalize())
+    Ok(format!("{:x}", hash.finalize()))
 }
 pub fn build(store: &Store, scan: &str, id: i64) -> Result<AnalysisContext> {
     ContextBuilder::new(store, scan)?.build(id)

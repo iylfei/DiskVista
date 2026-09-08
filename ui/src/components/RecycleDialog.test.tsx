@@ -48,6 +48,28 @@ function buttons(node: ReactNode): ReactElement<Record<string, unknown>>[] {
 }
 
 describe("one-click basket recycle dialog", () => {
+  it("shows stage, target and examined-entry counts without estimating an elapsed-time percentage", () => {
+    const html = renderToStaticMarkup(
+      view({
+        ...initialRecycleState,
+        checkProgress: {
+          stage: "filesystem",
+          targetsDone: 1,
+          targetsTotal: 3,
+          currentPath: "D:\\Fixture\\<target>",
+          checkedEntries: 640,
+        },
+      }),
+    );
+    expect(html).toContain("核对当前文件");
+    expect(html).toContain("1 / 3");
+    expect(html).toContain("640");
+    expect(html).toContain("&lt;target&gt;");
+    expect(html).toContain('value="1"');
+    expect(html).toContain('max="3"');
+    expect(html).toContain("取消并关闭");
+  });
+
   it("offers one direct recycle action without mounting the dialog early", () => {
     const html = renderToStaticMarkup(
       <BasketPage

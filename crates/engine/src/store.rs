@@ -9,6 +9,8 @@ use std::{
 };
 mod aggregation;
 mod analysis_usage;
+mod count_cache;
+pub use count_cache::{CountCache, CountCacheStats};
 mod entry_data;
 mod history_paging;
 mod query;
@@ -304,18 +306,52 @@ impl Store {
         path: &str,
         maximum: usize,
     ) -> Result<Vec<FileRecord>> {
+        self.descendants_bounded_with_progress(
+            scan,
+            path,
+            maximum,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            |_| Ok(()),
+        )
+    }
+
+    pub fn descendants_bounded_with_progress(
+        &self,
+        scan: &str,
+        path: &str,
+        maximum: usize,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        mut progress: impl FnMut(usize) -> Result<()>,
+    ) -> Result<Vec<FileRecord>> {
+        progress(0)?;
+        anyhow::ensure!(
+            !cancel.load(std::sync::atomic::Ordering::Relaxed),
+            "安全检查已取消"
+        );
         let c = self.connection()?;
+        let flag = cancel.clone();
+        c.progress_handler(
+            1000,
+            Some(move || flag.load(std::sync::atomic::Ordering::Relaxed)),
+        );
         let mut s=c.prepare(&format!("WITH RECURSIVE tree(id,path_key) AS (SELECT id,path_key FROM entries WHERE scan_id=?1 AND path_key=?2 UNION ALL SELECT e.id,e.path_key FROM entries e JOIN tree t ON e.parent_key=t.path_key WHERE e.scan_id=?1) SELECT {FIELDS} FROM entries WHERE id IN (SELECT id FROM tree) ORDER BY path_key LIMIT ?3"))?;
-        let result = s
-            .query_map(
-                params![
-                    scan,
-                    normalize(path),
-                    maximum.saturating_add(1).min(i64::MAX as usize) as i64
-                ],
-                decode,
-            )?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let rows = s.query_map(
+            params![
+                scan,
+                normalize(path),
+                maximum.saturating_add(1).min(i64::MAX as usize) as i64
+            ],
+            decode,
+        )?;
+        let mut result = Vec::new();
+        for row in rows {
+            anyhow::ensure!(
+                !cancel.load(std::sync::atomic::Ordering::Relaxed),
+                "安全检查已取消"
+            );
+            result.push(row?);
+            progress(result.len())?;
+        }
         anyhow::ensure!(
             result.len() <= maximum,
             "单个目标超过十万项，请选择更小的目录后重试"

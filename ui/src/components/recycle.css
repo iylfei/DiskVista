@@ -56,6 +56,11 @@
 .recycle-preview-total {
   font-weight: 600;
 }
+.recycle-progress {
+  display: block;
+  width: 100%;
+  margin-bottom: 14px;
+}
 .recycle-acknowledgement {
   margin: 16px 0;
 }
@@ -72,4 +77,10 @@
 }
 .recycle-error > button {
   margin-top: 9px;
+}
+.recycle-check-details {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+  font-size: 13px;
 }

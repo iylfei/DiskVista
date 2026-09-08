@@ -183,6 +183,24 @@ export interface CleanupPreview {
   pendingBytes: number;
   requiresExtraConfirmation: boolean;
 }
+
+export interface CleanupCheckProgress {
+  stage:
+    | "queued"
+    | "preparing"
+    | "snapshot"
+    | "filesystem"
+    | "protection"
+    | "usage"
+    | "size"
+    | "complete"
+    | "cancelled"
+    | "failed";
+  targetsDone: number;
+  targetsTotal: number;
+  currentPath: string | null;
+  checkedEntries: number;
+}
 export interface HistoryItem {
   id: string;
   batchId: string;

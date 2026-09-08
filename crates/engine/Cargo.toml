@@ -14,7 +14,7 @@ serde_json.workspace = true
 chrono.workspace = true
 uuid.workspace = true
 sha2.workspace = true
-rusqlite.workspace = true
+rusqlite = { workspace = true, features = ["hooks"] }
 globset = "0.4"
 
 [dev-dependencies]

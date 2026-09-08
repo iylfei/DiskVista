@@ -1,6 +1,11 @@
 import { api } from "./api";
 import { selectionLimit } from "./selection";
-import type { CleanupPreview, FileRecord, HistoryItem } from "./types";
+import type {
+  CleanupCheckProgress,
+  CleanupPreview,
+  FileRecord,
+  HistoryItem,
+} from "./types";
 
 type Target = Pick<FileRecord, "id" | "isDir">;
 export interface RecycleDialogState {
@@ -8,12 +13,14 @@ export interface RecycleDialogState {
   error: string;
   cancelRequested: boolean;
   cancelError: string;
+  checkProgress: CleanupCheckProgress | null;
 }
 export const initialRecycleState: RecycleDialogState = {
   phase: "checking",
   error: "",
   cancelRequested: false,
   cancelError: "",
+  checkProgress: null,
 };
 function validatePreview(
   result: CleanupPreview,
@@ -65,6 +72,10 @@ export function createRecycleSession({
   let running = false;
   let request = 0;
   let state = initialRecycleState;
+  let checkId: string | null = null;
+  let pendingCheck: Promise<CleanupPreview> | null = null;
+  let progressTimer: ReturnType<typeof setTimeout> | undefined;
+  let closing: Promise<boolean> | null = null;
   const targets = files.map(({ id, isDir }) => ({ id, isDir }));
   const targetIds = new Set(targets.map((file) => file.id));
   const update = (value: RecycleDialogState) => {
@@ -77,10 +88,33 @@ export function createRecycleSession({
       phase: "error",
       error: error instanceof Error ? error.message : String(error),
     });
+  function stopProgress() {
+    clearTimeout(progressTimer);
+    progressTimer = undefined;
+  }
+  function pollProgress(current: number, requestId: string) {
+    const active = () =>
+      live && current === request && state.phase === "checking";
+    progressTimer = setTimeout(async () => {
+      if (!active()) return;
+      try {
+        const progress = await api<CleanupCheckProgress | null>(
+          "cleanup_check_progress",
+          { requestId },
+        );
+        if (active() && progress) update({ ...state, checkProgress: progress });
+      } catch {
+        // Checking has its own result channel; a missed progress read must not restart it.
+      } finally {
+        if (active()) pollProgress(current, requestId);
+      }
+    }, 200);
+  }
   async function run() {
     if (
       !live ||
       running ||
+      closing ||
       state.phase === "executing" ||
       state.phase === "complete"
     )
@@ -98,18 +132,26 @@ export function createRecycleSession({
           targetIds.size !== targets.length
         )
           throw new Error(`每次只能处理 1–${selectionLimit} 个不重复的项目。`);
-        preview = await api<CleanupPreview>("preview_cleanup", {
+        checkId = crypto.randomUUID();
+        pendingCheck = api<CleanupPreview>("preview_cleanup", {
           scanId,
           entryIds: targets.map((file) => file.id),
+          requestId: checkId,
         });
+        pollProgress(current, checkId);
+        preview = await pendingCheck;
+        stopProgress();
         if (!live || current !== request) return;
         validatePreview(preview, scanId, targetIds);
         if (!preview.items.some((item) => item.allowed))
           throw new Error(deniedMessage(preview));
       } catch (error) {
+        stopProgress();
         if (live && current === request) failed(error);
         return;
       }
+      checkId = null;
+      pendingCheck = null;
       update({ ...initialRecycleState, phase: "executing" });
       onBusyChange(true);
       let result: HistoryItem[] | null = null;
@@ -145,17 +187,53 @@ export function createRecycleSession({
     }
   }
   function dispose() {
+    const abandoned = checkId;
+    checkId = null;
     live = false;
     request += 1;
+    stopProgress();
+    if (abandoned)
+      void api("cancel_cleanup_check", { requestId: abandoned }).catch(
+        () => {},
+      );
+  }
+  function close(): Promise<boolean> {
+    if (!live || state.phase === "executing") return Promise.resolve(false);
+    if (closing) return closing;
+    if (!checkId) {
+      dispose();
+      return Promise.resolve(true);
+    }
+    const abandoned = checkId;
+    request += 1; // Prevent a just-completed preview from entering execute_cleanup.
+    stopProgress();
+    update({ ...state, cancelRequested: true, cancelError: "" });
+    closing = (async () => {
+      try {
+        await api("cancel_cleanup_check", { requestId: abandoned });
+        // Keep the dialog until Rust has actually unwound its checking work.
+        await pendingCheck?.catch(() => {});
+        checkId = null;
+        dispose();
+        return true;
+      } catch (error) {
+        if (live)
+          update({
+            ...state,
+            cancelRequested: false,
+            cancelError: error instanceof Error ? error.message : String(error),
+          });
+        return false;
+      } finally {
+        closing = null;
+      }
+    })();
+    return closing;
   }
   const session = {
     run,
     cancelRemaining,
-    close() {
-      if (!live || state.phase === "executing") return false;
-      dispose();
-      return true;
-    },
+    close,
     dispose,
   };
   void run();

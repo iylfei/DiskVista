@@ -2,11 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Search } from "lucide-react";
 import { api } from "../lib/api";
 import { useSearchReady } from "../lib/useSearchReady";
+import { useQueryResult } from "../lib/useQueryResult";
 import type { EntryPage, FileRecord } from "../lib/types";
 import EntryTable from "./EntryTable";
 import PathBreadcrumb from "./PathBreadcrumb";
 import SpaceMap from "./SpaceMap";
 
+const emptyEntryPage: EntryPage = { items: [], total: 0 };
 const emptySelection = new Set<number>();
 
 export default function ApplicationFileView({
@@ -37,21 +39,29 @@ export default function ApplicationFileView({
   onError: (error: unknown) => void;
 }) {
   const [parent, setParent] = useState(root.path);
-  const [items, setItems] = useState<FileRecord[]>([]);
-  const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
   const queryScope = useRef("");
   const [search, setSearch] = useState("");
   const searchReady = useSearchReady(search);
   const [sort, setSort] = useState("size");
+  const key = JSON.stringify([
+    scanId,
+    status,
+    root.id,
+    parent,
+    search,
+    sort,
+    page,
+  ]);
+  const [data, setData] = useQueryResult<EntryPage>(key);
+  const { items, total } = data ?? emptyEntryPage;
+  const [loadError, setLoadError] = useState(false);
   const [busy, setBusy] = useState(true);
   const [reload, setReload] = useState(0);
   const fileList = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setParent(root.path);
-    setItems([]);
-    setTotal(0);
     setPage(0);
     setSearch("");
   }, [root.id, root.path]);
@@ -60,7 +70,7 @@ export default function ApplicationFileView({
     if (status !== "complete") return;
     let live = true;
     setBusy(true);
-    setItems([]);
+    setLoadError(false);
     const scope = JSON.stringify([scanId, parent, search, sort]);
     if (queryScope.current !== scope) {
       queryScope.current = scope;
@@ -89,11 +99,14 @@ export default function ApplicationFileView({
         setPage((current) =>
           Math.min(current, Math.max(0, Math.ceil(result.total / 100) - 1)),
         );
-        setItems(result.items);
-        setTotal(result.total);
+        setData(result);
       })
       .catch((error) => {
-        if (live) onError(error);
+        if (live) {
+          setData(null);
+          setLoadError(true);
+          onError(error);
+        }
       })
       .finally(() => {
         if (live) setBusy(false);
@@ -111,6 +124,7 @@ export default function ApplicationFileView({
     sort,
     page,
     reload,
+    setData,
     onError,
   ]);
 
@@ -196,7 +210,9 @@ export default function ApplicationFileView({
           adding={adding}
           total={total}
           page={page}
-          busy={busy}
+          busy={busy || !searchReady}
+          loadError={loadError}
+          onRetry={() => setReload((value) => value + 1)}
           onSelect={(file) => onAddToBasket(file.id)}
           onDetail={onDetail}
           onOpen={open}

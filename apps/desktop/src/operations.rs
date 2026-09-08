@@ -8,21 +8,52 @@ pub async fn preview_cleanup(
     state: State<'_, Shared>,
     scan_id: String,
     entry_ids: Vec<i64>,
+    request_id: Option<String>,
 ) -> Result<CleanupPreview, String> {
+    let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let check = state.cleanup_checks.begin(&request_id, entry_ids.len())?;
     let shared = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let _guard = shared.mutations.lock().unwrap();
-        let p = cleanup::preview(&shared.store, &scan_id, &entry_ids).map_err(error)?;
-        let mut previews = shared.cleanup_previews.lock().unwrap();
-        previews.retain(|_, p| chrono::Utc::now().timestamp() - p.created < 600);
-        if previews.len() > 20 {
-            previews.clear();
-        }
-        previews.insert(p.id.clone(), p.clone());
-        Ok(p)
+        let result = (|| {
+            // A cancelled preview must not wait for a long mutation to release its lock.
+            let _guard = loop {
+                if check.cancel.load(Ordering::Relaxed) {
+                    return Err("安全检查已取消".into());
+                }
+                match shared.mutations.try_lock() {
+                    Ok(guard) => break guard,
+                    Err(std::sync::TryLockError::WouldBlock) => {
+                        std::thread::sleep(std::time::Duration::from_millis(20))
+                    }
+                    Err(_) => return Err("无法获取安全检查锁".into()),
+                }
+            };
+            cleanup::preview_with_progress(
+                &shared.store,
+                &scan_id,
+                &entry_ids,
+                check.cancel.clone(),
+                |progress| check.report(progress),
+            )
+            .map_err(error)
+        })();
+        check.finish(result, &shared.cleanup_previews)
     })
     .await
     .map_err(error)?
+}
+#[tauri::command]
+pub fn cleanup_check_progress(
+    state: State<'_, Shared>,
+    request_id: String,
+) -> Option<CleanupCheckProgress> {
+    state.cleanup_checks.progress(&request_id)
+}
+#[tauri::command]
+pub fn cancel_cleanup_check(state: State<'_, Shared>, request_id: String) -> Result<(), String> {
+    state
+        .cleanup_checks
+        .cancel(&request_id, &state.cleanup_previews)
 }
 #[tauri::command]
 pub async fn execute_cleanup(

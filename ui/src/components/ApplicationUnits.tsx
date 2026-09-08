@@ -3,6 +3,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { Boxes, FolderOpen, Info, Search } from "lucide-react";
 import { api, bytes } from "../lib/api";
 import { useSearchReady } from "../lib/useSearchReady";
+import { useQueryResult } from "../lib/useQueryResult";
 import type { ApplicationUnitPage, FileRecord } from "../lib/types";
 import { startFileDetailLoad } from "../lib/fileDetail";
 import { unitCleanupBlockReason } from "../lib/cleanupTarget";
@@ -42,10 +43,13 @@ export default function ApplicationUnits({
   adding: Set<number>;
   onError: (e: unknown) => void;
 }) {
-  const [data, setData] = useState<ApplicationUnitPage | null>(null);
   const [search, setSearch] = useState("");
   const searchReady = useSearchReady(search);
   const [page, setPage] = useState(0);
+  const key = JSON.stringify([scanId, status, search, page]);
+  const [data, setData] = useQueryResult<ApplicationUnitPage>(key);
+  const queryScope = useRef("");
+  const [loadError, setLoadError] = useState(false);
   const [busy, setBusy] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [reload, setReload] = useState(0);
@@ -81,7 +85,6 @@ export default function ApplicationUnits({
   }, [browseTarget, visible.length]);
   useEffect(() => {
     setPage(0);
-    setData(null);
     setExpanded(new Set());
     setBrowseTarget(null);
     listScrollTop.current = 0;
@@ -90,6 +93,15 @@ export default function ApplicationUnits({
     if (pending) return;
     let live = true;
     setBusy(true);
+    setLoadError(false);
+    const scope = JSON.stringify([scanId, search]);
+    if (queryScope.current !== scope) {
+      queryScope.current = scope;
+      if (page !== 0) {
+        setPage(0);
+        return;
+      }
+    }
     if (!searchReady) return;
     api<ApplicationUnitPage>("application_units", {
       scanId,
@@ -99,11 +111,19 @@ export default function ApplicationUnits({
     })
       .then((result) => {
         if (!live) return;
+        setPage((previous) =>
+          Math.min(previous, Math.max(0, Math.ceil(result.total / 100) - 1)),
+        );
         setData(result);
-        setExpanded(search ? expandedSearchResults(result.items) : new Set());
+        if (!data)
+          setExpanded(search ? expandedSearchResults(result.items) : new Set());
       })
       .catch((e) => {
-        if (live) onError(e);
+        if (live) {
+          setData(null);
+          setLoadError(true);
+          onError(e);
+        }
       })
       .finally(() => {
         if (live) setBusy(false);
@@ -120,6 +140,7 @@ export default function ApplicationUnits({
     page,
     revision,
     reload,
+    setData,
     onError,
   ]);
 
@@ -224,11 +245,22 @@ export default function ApplicationUnits({
           重新统计
         </button>
       </div>
-      <div className="unit-list" ref={scroll} aria-busy={busy}>
+      <div
+        className="unit-list"
+        ref={scroll}
+        aria-busy={busy}
+        inert={(busy || !searchReady) && data !== null}
+      >
         {!visible.length ? (
           <div className="empty compact">
             <Boxes size={30} />
-            <p>{busy ? "正在统计占用…" : "没有找到匹配的应用或文件夹"}</p>
+            <p>
+              {busy
+                ? "正在统计占用…"
+                : loadError
+                  ? "无法读取列表，请重试。"
+                  : "没有找到匹配的应用或文件夹"}
+            </p>
           </div>
         ) : (
           <div style={{ height: rows.getTotalSize(), position: "relative" }}>
@@ -338,6 +370,7 @@ export default function ApplicationUnits({
         <span>
           {translateText("共")} {data?.total ?? 0} {translateText("项").trim()}
           {expanded.size > 0 ? translateText(" · 已展开子项") : ""}
+          {busy && data && <span role="status"> · 正在统计占用…</span>}
         </span>
         <div>
           <button

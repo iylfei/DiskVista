@@ -234,3 +234,91 @@ fn directory_filters_and_empty_parent_keep_exact_counts() {
     assert_eq!(empty_directory.total, 0);
     assert!(empty_directory.items.is_empty());
 }
+#[test]
+fn completed_directory_counts_survive_page_and_sort_changes_but_not_filter_changes() {
+    let (_temp, store) = fixture(&[file(ROOT, "a.bin", 10, 1), file(ROOT, "b.bin", 20, 2)]);
+    let cache = CountCache::default();
+    let mut query = EntryQuery {
+        scan_id: "s".into(),
+        parent: Some(ROOT.into()),
+        limit: 1,
+        ..Default::default()
+    };
+    let first = store.query_cached(&query, &cache).unwrap();
+    assert_eq!(first.total, 2);
+    query.offset = 1;
+    query.sort = Some("name".into());
+    let second = store.query_cached(&query, &cache).unwrap();
+    assert_eq!(second.total, 2);
+    assert_eq!(second.items[0].name, "b.bin");
+    assert_eq!(cache.stats().sql_counts, 1);
+    assert_eq!(cache.stats().hits, 1);
+    query.minimum_bytes = 15;
+    query.offset = 0;
+    assert_eq!(store.query_cached(&query, &cache).unwrap().total, 1);
+    assert_eq!(cache.stats().sql_counts, 2);
+}
+
+#[test]
+fn writes_from_another_connection_and_scan_deletion_invalidate_counts() {
+    let (_temp, store) = fixture(&[file(ROOT, "a.bin", 10, 1)]);
+    let cache = CountCache::default();
+    let query = EntryQuery {
+        scan_id: "s".into(),
+        parent: Some(ROOT.into()),
+        limit: 100,
+        ..Default::default()
+    };
+    assert_eq!(store.query_cached(&query, &cache).unwrap().total, 1);
+    Store::insert_batch(
+        &mut store.connection().unwrap(),
+        "s",
+        &[file(ROOT, "b.bin", 20, 2)],
+    )
+    .unwrap();
+    assert_eq!(store.query_cached(&query, &cache).unwrap().total, 2);
+    assert_eq!(cache.stats().sql_counts, 2);
+    // The write races a read that already obtained its cached total. The response
+    // must stay internally consistent, and the next response must see the delete.
+    let page = store
+        .query_inner(&query, Some(&cache), || {
+            store
+                .connection()
+                .unwrap()
+                .execute("DELETE FROM entries WHERE scan_id='s'", [])
+                .unwrap();
+        })
+        .unwrap();
+    assert_eq!(page.total, 2);
+    assert_eq!(page.items.len(), 2);
+    assert_eq!(store.query_cached(&query, &cache).unwrap().total, 0);
+    store
+        .connection()
+        .unwrap()
+        .execute("DELETE FROM scans WHERE id='s'", [])
+        .unwrap();
+    assert_eq!(store.query_cached(&query, &cache).unwrap().total, 0);
+}
+
+#[test]
+fn unfinished_scans_are_not_cached_and_caches_do_not_cross_database_paths() {
+    let (_temp, store) = fixture(&[file(ROOT, "a.bin", 10, 1)]);
+    let (_other_temp, other) = fixture(&[file(ROOT, "a.bin", 10, 1), file(ROOT, "b.bin", 20, 2)]);
+    let cache = CountCache::default();
+    let query = EntryQuery {
+        scan_id: "s".into(),
+        parent: Some(ROOT.into()),
+        limit: 100,
+        ..Default::default()
+    };
+    assert_eq!(store.query_cached(&query, &cache).unwrap().total, 1);
+    assert_eq!(other.query_cached(&query, &cache).unwrap().total, 2);
+    let mut scan = store.scan("s").unwrap();
+    scan.status = "scanning".into();
+    store.save_scan(&scan).unwrap();
+    let before = cache.stats().sql_counts;
+    for _ in 0..2 {
+        assert_eq!(store.query_cached(&query, &cache).unwrap().total, 1);
+    }
+    assert_eq!(cache.stats().sql_counts - before, 2);
+}

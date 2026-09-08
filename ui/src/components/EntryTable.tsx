@@ -30,6 +30,8 @@ interface Props {
   page: number;
   onPage: (page: number) => void;
   busy?: boolean;
+  loadError?: boolean;
+  onRetry?: () => void;
 }
 export default function EntryTable({
   scanId,
@@ -46,6 +48,8 @@ export default function EntryTable({
   page,
   onPage,
   busy,
+  loadError,
+  onRetry,
   quietReview = false,
   emptyTitle = "这里暂时没有项目",
   emptyDescription = "可以返回上一级，或调整搜索条件。",
@@ -81,13 +85,27 @@ export default function EntryTable({
         </span>
         <span />
       </div>
-      <div className="table-scroll" ref={ref} aria-busy={busy}>
+      <div
+        className="table-scroll"
+        ref={ref}
+        aria-busy={busy}
+        inert={busy && items.length > 0}
+      >
         {items.length === 0 ? (
           <div className="empty compact">
             <Folder size={28} />
-            <p>{busy ? "正在载入扫描结果…" : emptyTitle}</p>
-            {!busy && <small>{emptyDescription}</small>}
-            {!busy && onClearFilters && (
+            <p>
+              {busy
+                ? "正在载入扫描结果…"
+                : loadError
+                  ? "无法读取列表，请重试。"
+                  : emptyTitle}
+            </p>
+            {!busy && !loadError && <small>{emptyDescription}</small>}
+            {!busy && loadError && onRetry && (
+              <button onClick={onRetry}>重试</button>
+            )}
+            {!busy && !loadError && onClearFilters && (
               <button onClick={onClearFilters}>清除筛选</button>
             )}
           </div>
@@ -110,7 +128,7 @@ export default function EntryTable({
                     type="checkbox"
                     aria-label={`选择 ${f.name}`}
                     checked={inBasket || selected.has(f.id)}
-                    disabled={protectedItem || inBasket}
+                    disabled={busy || protectedItem || inBasket}
                     title={
                       inBasket
                         ? "已在待清理清单中"
@@ -120,6 +138,7 @@ export default function EntryTable({
                   />
                   <button
                     className="file-name"
+                    disabled={busy}
                     onClick={() => onDetail(f)}
                     title={f.path}
                   >
@@ -172,6 +191,7 @@ export default function EntryTable({
                     )}
                     <button
                       className="icon-button"
+                      disabled={busy}
                       aria-label={f.isDir ? `打开 ${f.name}` : `查看 ${f.name}`}
                       onClick={() => (f.isDir ? onOpen(f) : onDetail(f))}
                     >
@@ -187,6 +207,9 @@ export default function EntryTable({
       <div className="table-footer">
         <span>
           共 {total.toLocaleString(localeName())} 项 · 每页 100 项
+          {busy && items.length > 0 && (
+            <span role="status"> · 正在载入扫描结果…</span>
+          )}
           {summariesFailed && (
             <small className="summary-load-error">
               AI 标识暂不可用，仍可打开详情查看

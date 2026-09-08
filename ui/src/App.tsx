@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { api } from "./lib/api";
 import { useSearchReady } from "./lib/useSearchReady";
+import { useQueryResult } from "./lib/useQueryResult";
 import type {
   Bootstrap,
   Scan,
@@ -67,6 +68,7 @@ const navigation = [
   ["rules", "规则中心", ShieldCheck],
   ["settings", "设置", SettingsIcon],
 ] as const;
+const emptyEntryPage: EntryPage = { items: [], total: 0 };
 type Page = (typeof navigation)[number][0];
 export default function App() {
   const [language, setAppLanguage] = useState<Language>("zh-CN");
@@ -83,8 +85,6 @@ export default function App() {
     scanIdRef.current = scan?.id ?? null;
   }, [page, scan?.id]);
   const [parent, setParent] = useState("");
-  const [items, setItems] = useState<FileRecord[]>([]);
-  const [total, setTotal] = useState(0);
   const [index, setIndex] = useState(0);
   const fileQueryScope = useRef("");
   const [search, setSearch] = useState("");
@@ -92,6 +92,19 @@ export default function App() {
   const [risk, setRisk] = useState("");
   const [analysisStatus, setAnalysisStatus] = useState("");
   const [sort, setSort] = useState("size");
+  const fileKey = JSON.stringify([
+    scan?.id,
+    scan?.status,
+    parent,
+    search,
+    risk,
+    analysisStatus,
+    sort,
+    index,
+  ]);
+  const [fileData, setFileData] = useQueryResult<EntryPage>(fileKey);
+  const { items, total } = fileData ?? emptyEntryPage;
+  const [fileError, setFileError] = useState(false);
   const [showMapFiles, setShowMapFiles] = useState(false);
   const main = useRef<HTMLElement>(null);
   const fileList = useRef<HTMLDivElement>(null);
@@ -232,8 +245,8 @@ export default function App() {
         return;
       }
     }
+    setFileError(false);
     if (!searchReady) return;
-    setItems([]);
     void (async () => {
       setBusy(true);
       try {
@@ -254,11 +267,14 @@ export default function App() {
           setIndex((previous) =>
             Math.min(previous, Math.max(0, Math.ceil(r.total / 100) - 1)),
           );
-          setItems(r.items);
-          setTotal(r.total);
+          setFileData(r);
         }
       } catch (e) {
-        if (live) fail(e);
+        if (live) {
+          setFileData(null);
+          setFileError(true);
+          fail(e);
+        }
       } finally {
         if (live) setBusy(false);
       }
@@ -280,6 +296,7 @@ export default function App() {
     sort,
     revision,
     filteredAnalysisRevision,
+    setFileData,
     fail,
   ]);
   useEffect(() => {
@@ -301,7 +318,7 @@ export default function App() {
       setSearch("");
       setRisk("");
       setAnalysisStatus("");
-      setItems([]);
+      setFileData(null);
       setShowMapFiles(false);
       refresh();
     } catch (e) {
@@ -393,8 +410,7 @@ export default function App() {
         setRisk("");
         setAnalysisStatus("");
         setShowMapFiles(false);
-        setItems([]);
-        setTotal(0);
+        setFileData(null);
         setIndex(0);
         resetSelection();
         setDetail(null);
@@ -743,7 +759,9 @@ export default function App() {
                             total={total}
                             page={index}
                             onPage={setIndex}
-                            busy={busy}
+                            busy={busy || !searchReady}
+                            loadError={fileError}
+                            onRetry={refresh}
                             emptyTitle={
                               scanning
                                 ? "正在扫描这个目录"

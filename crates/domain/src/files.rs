@@ -147,6 +147,31 @@ pub struct CleanupPreview {
     pub policy_fingerprint: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CleanupCheckStage {
+    Queued,
+    Preparing,
+    Snapshot,
+    Filesystem,
+    Protection,
+    Usage,
+    Size,
+    Complete,
+    Cancelled,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanupCheckProgress {
+    pub stage: CleanupCheckStage,
+    pub targets_done: usize,
+    pub targets_total: usize,
+    pub current_path: Option<String>,
+    pub checked_entries: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryItem {

@@ -46,6 +46,7 @@ struct CacheState {
 #[derive(Default)]
 pub struct QueryCache {
     state: Mutex<CacheState>,
+    counts: crate::store::CountCache,
     #[cfg(test)]
     builds: std::sync::atomic::AtomicUsize,
 }
@@ -59,6 +60,12 @@ impl QueryCache {
         let mut state = self.state.lock().unwrap();
         state.revision = state.revision.wrapping_add(1);
         state.views.clear();
+        drop(state);
+        self.counts.clear();
+    }
+
+    pub fn query_unclassified(&self, store: &Store, query: &EntryQuery) -> Result<EntryPage> {
+        store.query_cached(query, &self.counts)
     }
 
     fn check_revision(&self, revision: u64) -> Result<()> {
@@ -136,7 +143,7 @@ impl QueryCache {
         AnalysisFilter::validate(&query.analysis_status, analysis)?;
         let revision = self.revision();
         if !needs_classification(query) {
-            let mut page = store.query(query)?;
+            let mut page = self.query_unclassified(store, query)?;
             for file in &mut page.items {
                 classifier.apply(file);
             }

@@ -63,7 +63,9 @@ function open(files = [target]) {
   };
 }
 
-beforeEach(() => call.mockReset());
+beforeEach(() => {
+  call.mockReset();
+});
 
 describe("one-click recycle session", () => {
   it("checks and then immediately executes with risk acknowledgement", async () => {
@@ -74,7 +76,10 @@ describe("one-click recycle session", () => {
 
     await vi.waitFor(() => expect(run.latest().phase).toBe("complete"));
     expect(call.mock.calls).toEqual([
-      ["preview_cleanup", { scanId: "scan-one", entryIds: [7] }],
+      [
+        "preview_cleanup",
+        { scanId: "scan-one", entryIds: [7], requestId: expect.any(String) },
+      ],
       ["execute_cleanup", { previewId: "preview-one", acknowledgeRisk: true }],
     ]);
     expect(run.onBusyChange.mock.calls).toEqual([[true], [false]]);
@@ -111,6 +116,7 @@ describe("one-click recycle session", () => {
     expect(call).toHaveBeenNthCalledWith(1, "preview_cleanup", {
       scanId: "scan-one",
       entryIds: [7, 8, 9],
+      requestId: expect.any(String),
     });
     expect(call).toHaveBeenNthCalledWith(2, "execute_cleanup", {
       previewId: "mixed-preview",
@@ -141,6 +147,7 @@ describe("one-click recycle session", () => {
     expect(call).toHaveBeenCalledExactlyOnceWith("preview_cleanup", {
       scanId: "scan-one",
       entryIds: [7],
+      requestId: expect.any(String),
     });
     expect(run.onBusyChange).not.toHaveBeenCalled();
     expect(run.onDone).not.toHaveBeenCalled();
@@ -204,6 +211,7 @@ describe("one-click recycle session", () => {
     expect(call).toHaveBeenCalledExactlyOnceWith("preview_cleanup", {
       scanId: "scan-one",
       entryIds: [7],
+      requestId: expect.any(String),
     });
 
     pending.resolve(preview());
@@ -214,15 +222,20 @@ describe("one-click recycle session", () => {
 
   it("can close during checking and ignores the late result", async () => {
     const pending = deferred<CleanupPreview>();
-    call.mockReturnValueOnce(pending.promise);
+    call.mockReturnValueOnce(pending.promise).mockResolvedValueOnce(undefined);
     const run = open();
 
-    expect(run.session.close()).toBe(true);
+    const closed = run.session.close();
+    expect(run.latest().cancelRequested).toBe(true);
     pending.resolve(preview());
+    expect(await closed).toBe(true);
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(call).toHaveBeenCalledTimes(1);
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(call).toHaveBeenLastCalledWith("cancel_cleanup_check", {
+      requestId: call.mock.calls[0][1]?.requestId,
+    });
     expect(run.onBusyChange).not.toHaveBeenCalled();
     expect(run.onDone).not.toHaveBeenCalled();
   });
@@ -281,7 +294,7 @@ describe("one-click recycle session", () => {
       phase: "executing",
       cancelRequested: true,
     });
-    expect(run.session.close()).toBe(false);
+    expect(await run.session.close()).toBe(false);
 
     cancellation.resolve(undefined);
     await cancel;
@@ -336,5 +349,100 @@ describe("one-click recycle session", () => {
     expect(run.states).toHaveLength(stateCount);
     expect(run.onDone).toHaveBeenCalledWith(history);
     expect(run.onBusyChange.mock.calls).toEqual([[true], [false]]);
+  });
+});
+
+describe("cancellable check progress", () => {
+  it("reports progress and rejects late progress after closing starts", async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = deferred<CleanupPreview>();
+      const late = deferred<unknown>();
+      let reads = 0;
+      call.mockImplementation((command) => {
+        if (command === "preview_cleanup") return pending.promise;
+        if (command === "cleanup_check_progress") {
+          reads += 1;
+          return reads === 1
+            ? Promise.resolve({
+                stage: "filesystem",
+                targetsDone: 0,
+                targetsTotal: 1,
+                currentPath: "D:\\Fixture",
+                checkedEntries: 64,
+              })
+            : late.promise;
+        }
+        if (command === "cancel_cleanup_check")
+          return Promise.resolve(undefined);
+        throw Error(`Unexpected ${command}`);
+      });
+      const run = open();
+      await vi.advanceTimersByTimeAsync(200);
+      expect(run.latest().checkProgress?.checkedEntries).toBe(64);
+      await vi.advanceTimersByTimeAsync(200);
+      const closed = run.session.close();
+      late.resolve({
+        stage: "complete",
+        targetsDone: 1,
+        targetsTotal: 1,
+        checkedEntries: 999,
+      });
+      await vi.advanceTimersByTimeAsync(200);
+      expect(run.latest().checkProgress?.checkedEntries).toBe(64);
+      pending.reject(new Error("cancelled"));
+      expect(await closed).toBe(true);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(reads).toBe(2);
+      expect(call.mock.calls.some(([name]) => name === "execute_cleanup")).toBe(
+        false,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the dialog after a failed cancellation and waits for backend exit on retry", async () => {
+    const pending = deferred<CleanupPreview>();
+    let attempts = 0;
+    call.mockImplementation((command) => {
+      if (command === "preview_cleanup") return pending.promise;
+      if (command === "cancel_cleanup_check")
+        return ++attempts === 1
+          ? Promise.reject(new Error("IPC unavailable"))
+          : Promise.resolve(undefined);
+      throw Error(`Unexpected ${command}`);
+    });
+    const run = open();
+    expect(await run.session.close()).toBe(false);
+    expect(run.latest().cancelError).toBe("IPC unavailable");
+    let returned = false;
+    const closed = run.session.close().then((value) => {
+      returned = true;
+      return value;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(returned).toBe(false);
+    pending.reject(new Error("cancelled"));
+    expect(await closed).toBe(true);
+    expect(attempts).toBe(2);
+    expect(run.onDone).not.toHaveBeenCalled();
+  });
+
+  it("unmount cancellation only targets the abandoned request", async () => {
+    const pending = deferred<CleanupPreview>();
+    call.mockReturnValueOnce(pending.promise).mockResolvedValue(undefined);
+    const run = open();
+    const requestId = call.mock.calls[0][1]?.requestId;
+    run.session.dispose();
+    expect(call).toHaveBeenLastCalledWith("cancel_cleanup_check", {
+      requestId,
+    });
+    pending.resolve(preview());
+    await Promise.resolve();
+    expect(call.mock.calls.some(([name]) => name === "execute_cleanup")).toBe(
+      false,
+    );
   });
 });
