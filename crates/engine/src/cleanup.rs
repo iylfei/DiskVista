@@ -13,10 +13,20 @@ use std::{
 };
 
 pub fn live_tree(path: &str) -> Result<Vec<FileRecord>> {
+    live_tree_cancellable(path, &AtomicBool::new(false))
+}
+
+pub fn live_tree_cancellable(path: &str, cancel: &AtomicBool) -> Result<Vec<FileRecord>> {
+    if cancel.load(Ordering::Relaxed) {
+        bail!("用户取消，未处理剩余项目");
+    }
     let root = filesystem::validate_local_path(path)?;
     let mut out = Vec::new();
     let mut queue = VecDeque::from([root]);
     while let Some(path) = queue.pop_front() {
+        if cancel.load(Ordering::Relaxed) {
+            bail!("用户取消，未处理剩余项目");
+        }
         let file = filesystem::inspect(&path)?;
         if file.identity.is_none() {
             bail!("文件系统未提供可靠身份，无法安全复核此目标");
@@ -32,6 +42,9 @@ pub fn live_tree(path: &str) -> Result<Vec<FileRecord>> {
             }
             out.push(file);
             filesystem::enumerate(&path, |child| {
+                if cancel.load(Ordering::Relaxed) {
+                    bail!("用户取消，未处理剩余项目");
+                }
                 if child.identity.is_none() {
                     bail!("子项没有可靠文件身份，请逐层查看");
                 }
@@ -109,6 +122,8 @@ pub fn preview(store: &Store, scan_id: &str, ids: &[i64]) -> Result<CleanupPrevi
                 continue;
             }
         };
+        let snapshot_fingerprint = fingerprint(&descendants);
+        drop(descendants);
         let live = match live_tree(&file.path) {
             Ok(live) => live,
             Err(e) => {
@@ -116,7 +131,8 @@ pub fn preview(store: &Store, scan_id: &str, ids: &[i64]) -> Result<CleanupPrevi
                 continue;
             }
         };
-        if fingerprint(&descendants) != fingerprint(&live) {
+        let live_fingerprint = fingerprint(&live);
+        if snapshot_fingerprint != live_fingerprint {
             items.push(blocked(&file, "扫描后目标发生变化，请刷新后重新选择"));
             continue;
         }
@@ -145,7 +161,7 @@ pub fn preview(store: &Store, scan_id: &str, ids: &[i64]) -> Result<CleanupPrevi
             entry_id: file.id,
             path: file.path,
             bytes,
-            fingerprint: fingerprint(&live),
+            fingerprint: live_fingerprint,
             risk,
             allowed: true,
             reason: "已核对当前身份、大小、修改时间、后代、保护状态和占用；执行前仍会再次核验"
@@ -249,7 +265,7 @@ pub fn execute(
             continue;
         }
         let validation = || -> Result<u64> {
-            let live = live_tree(&item.path)?;
+            let live = live_tree_cancellable(&item.path, &cancel)?;
             if fingerprint(&live) != item.fingerprint {
                 bail!("目标身份、大小、时间或目录内容已变化");
             }
@@ -272,8 +288,9 @@ pub fn execute(
                 let fp = item.fingerprint.clone();
                 let policy = policy.clone();
                 let apps = apps.clone();
+                let item_cancel = cancel.clone();
                 let predelete = move || -> Result<()> {
-                    let live = live_tree(&path)?;
+                    let live = live_tree_cancellable(&path, &item_cancel)?;
                     if fingerprint(&live) != fp {
                         bail!("回收开始前目标再次变化");
                     }

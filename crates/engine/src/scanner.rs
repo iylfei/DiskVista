@@ -1,15 +1,14 @@
 use crate::{rules::RuleSet, safety::SafetyPolicy, store::Store};
 use anyhow::{Context, Result};
 use cleaner_domain::*;
-use cleaner_platform::{filesystem, inventory, journal, normalize, within};
+use cleaner_platform::{filesystem, inventory, journal, normalize};
 use serde::{Deserialize, Serialize};
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc,
+        Arc,
     },
-    time::{Duration, Instant},
 };
 
 #[derive(Serialize, Deserialize)]
@@ -28,12 +27,7 @@ pub struct SnapshotJournal {
     pub root_identity: Option<String>,
     pub checkpoint: journal::Checkpoint,
 }
-// The bounded queue costs at most 512 records; inline entries avoid one heap allocation per file.
-#[allow(clippy::large_enum_variant)]
-enum Event {
-    Entry(FileRecord),
-    Done(i64, Option<String>),
-}
+mod walk;
 
 pub fn run(job: ScanJob, cancel: Arc<AtomicBool>, mut progress: impl FnMut(&Scan)) -> Result<()> {
     let store = Store::open(&job.database)?;
@@ -106,127 +100,18 @@ pub fn run(job: ScanJob, cancel: Arc<AtomicBool>, mut progress: impl FnMut(&Scan
         let mut conn = store.connection()?;
         Store::insert_batch(&mut conn, &job.scan_id, &[root])?;
     }
-    {
-        let mut conn = store.connection()?;
-        let concurrency = filesystem::volumes()
-            .iter()
-            .find(|v| within(&job.root, &v.path))
-            .map(|v| if v.removable { 1 } else { 4 })
-            .unwrap_or(1);
-        let mut last = Instant::now();
-        loop {
-            if cancel.load(Ordering::Relaxed) {
-                break;
-            }
-            let pending = store.pending(&job.scan_id, concurrency)?;
-            if pending.is_empty() {
-                break;
-            }
-            let (sender, receiver) = mpsc::sync_channel(512);
-            std::thread::scope(|scope| -> Result<()> {
-                for directory in pending {
-                    let sender = sender.clone();
-                    let cancel = cancel.clone();
-                    scope.spawn(move || {
-                        let result = filesystem::enumerate(Path::new(&directory.path), |file| {
-                            if cancel.load(Ordering::Relaxed) {
-                                return Ok(false);
-                            }
-                            Ok(sender.send(Event::Entry(file)).is_ok())
-                        });
-                        let error = if cancel.load(Ordering::Relaxed) {
-                            Some("扫描已取消，目录不完整".into())
-                        } else {
-                            result.err().map(|e| format!("{e:#}"))
-                        };
-                        let _ = sender.send(Event::Done(directory.id, error));
-                    });
-                }
-                drop(sender);
-                let mut batch = Vec::with_capacity(512);
-                let mut done = Vec::new();
-                for event in receiver {
-                    match event {
-                        Event::Entry(mut f) => {
-                            // NTFS directory-entry timestamps can lag the directory handle's
-                            // timestamps after a child was created. Use one handle read per
-                            // directory so later safety fingerprints compare the same source.
-                            if f.is_dir
-                                && f.attributes
-                                    & (filesystem::REPARSE
-                                        | filesystem::OFFLINE
-                                        | filesystem::RECALL)
-                                    == 0
-                            {
-                                match filesystem::inspect(Path::new(&f.path)) {
-                                    Ok(fresh) if fresh.identity == f.identity => f = fresh,
-                                    _ => {
-                                        f.issue = Some("目录身份变化或元数据无法读取".into());
-                                        f.enumerated = true;
-                                        f.complete = false;
-                                        scan.issues += 1;
-                                    }
-                                }
-                            }
-                            f.assessment = rules.classify_indexed(&f, &policy, &apps);
-                            if f.is_dir {
-                                scan.directories += 1;
-                            } else {
-                                scan.files += 1;
-                                scan.logical_bytes =
-                                    scan.logical_bytes.saturating_add(f.logical_bytes);
-                                scan.allocated_bytes = scan
-                                    .allocated_bytes
-                                    .saturating_add(f.allocated_bytes.unwrap_or(0));
-                            }
-                            if f.is_dir {
-                                f.complete = false;
-                            }
-                            let own_data = job
-                                .database
-                                .parent()
-                                .is_some_and(|p| within(&f.path, &p.to_string_lossy()));
-                            if f.attributes
-                                & (filesystem::REPARSE | filesystem::OFFLINE | filesystem::RECALL)
-                                != 0
-                                || own_data
-                            {
-                                f.enumerated = true;
-                                f.complete = false;
-                                f.issue = Some(
-                                    if own_data {
-                                        "应用自身索引目录不展开"
-                                    } else {
-                                        "链接、挂载点或云占位项不展开"
-                                    }
-                                    .into(),
-                                );
-                                scan.issues += 1;
-                            }
-                            batch.push(f);
-                            if batch.len() >= 512 {
-                                Store::insert_batch(&mut conn, &job.scan_id, &batch)?;
-                                batch.clear();
-                            }
-                        }
-                        Event::Done(id, error) => done.push((id, error)),
-                    }
-                    if last.elapsed() >= Duration::from_millis(250) {
-                        store.save_scan(&scan)?;
-                        progress(&scan);
-                        last = Instant::now();
-                    }
-                }
-                if !batch.is_empty() {
-                    Store::insert_batch(&mut conn, &job.scan_id, &batch)?;
-                }
-                for (id, error) in done {
-                    store.finish_directory(&job.scan_id, id, error)?;
-                }
-                Ok(())
-            })?;
-        }
+    walk::Walker {
+        store: &store,
+        rules: &rules,
+        policy: &policy,
+        apps: &apps,
+        cancel: &cancel,
+        own_data: job
+            .database
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned()),
     }
+    .run(&mut scan, &mut progress)?;
     if cancel.load(Ordering::Relaxed) {
         scan.status = "cancelled".into();
         scan.finished = Some(chrono::Utc::now().timestamp());
@@ -239,7 +124,9 @@ pub fn run(job: ScanJob, cancel: Arc<AtomicBool>, mut progress: impl FnMut(&Scan
     scan.message = "汇总目录、硬链接和不完整区域".into();
     store.save_scan(&scan)?;
     progress(&scan);
-    store.aggregate(&job.scan_id)?;
+    if !store.aggregate_cancellable(&job.scan_id, &cancel)? {
+        return finish_cancelled(&store, &mut scan, &mut progress);
+    }
     // Re-evaluate rules using descendant activity, with bounded result pages.
     let mut after = 0;
     loop {
@@ -272,7 +159,9 @@ pub fn run(job: ScanJob, cancel: Arc<AtomicBool>, mut progress: impl FnMut(&Scan
         }
         store.update_assessments(&updates)?;
     }
-    store.aggregate(&job.scan_id)?;
+    if cancel.load(Ordering::Relaxed) || !store.propagate_protection(&job.scan_id, &cancel)? {
+        return finish_cancelled(&store, &mut scan, &mut progress);
+    }
     let (files, dirs, issues) = store.stats(&job.scan_id)?;
     scan.files = files;
     scan.directories = dirs;
@@ -328,4 +217,17 @@ pub fn create_scan(store: &Store, root: &str) -> Result<Scan> {
     };
     store.save_scan(&scan)?;
     Ok(scan)
+}
+
+fn finish_cancelled(
+    store: &Store,
+    scan: &mut Scan,
+    progress: &mut impl FnMut(&Scan),
+) -> Result<()> {
+    scan.status = "cancelled".into();
+    scan.finished = Some(chrono::Utc::now().timestamp());
+    scan.message = "扫描已取消，索引不完整，不能据此清理".into();
+    store.save_scan(scan)?;
+    progress(scan);
+    Ok(())
 }

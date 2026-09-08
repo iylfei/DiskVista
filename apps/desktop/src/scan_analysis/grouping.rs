@@ -2,7 +2,39 @@ use cleaner_domain::{AnalysisContext, FileRecord, LlmSettings};
 use cleaner_llm::{
     batch_metadata_bytes, validate_batch_contexts, MAX_BATCH_ITEMS, MAX_BATCH_METADATA_BYTES,
 };
-use std::collections::VecDeque;
+use std::{
+    cmp::Reverse,
+    collections::{BinaryHeap, HashMap, VecDeque},
+};
+
+pub(super) struct CandidateQueue {
+    directories: Vec<VecDeque<(usize, FileRecord)>>,
+    heads: BinaryHeap<Reverse<(usize, usize)>>,
+}
+
+impl CandidateQueue {
+    pub fn new(files: VecDeque<FileRecord>) -> Self {
+        let mut directories: Vec<VecDeque<(usize, FileRecord)>> = Vec::new();
+        let mut ids = HashMap::new();
+        for (rank, file) in files.into_iter().enumerate() {
+            let id = *ids.entry(parent(&file)).or_insert_with(|| {
+                directories.push(VecDeque::new());
+                directories.len() - 1
+            });
+            directories[id].push_back((rank, file));
+        }
+        let heads = directories
+            .iter()
+            .enumerate()
+            .filter_map(|(id, files)| files.front().map(|(rank, _)| Reverse((*rank, id))))
+            .collect();
+        Self { directories, heads }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.heads.is_empty()
+    }
+}
 
 pub(crate) fn item_limit(settings: &LlmSettings) -> usize {
     if settings.token_parameter == "none" {
@@ -12,19 +44,21 @@ pub(crate) fn item_limit(settings: &LlmSettings) -> usize {
     }
 }
 
-pub(super) fn take(queue: &mut VecDeque<FileRecord>, limit: usize) -> Vec<FileRecord> {
+pub(super) fn take(queue: &mut CandidateQueue, limit: usize) -> Vec<FileRecord> {
     let mut batch = Vec::new();
     while batch.len() < limit {
-        let Some(first) = queue.pop_front() else {
+        let Some(Reverse((_, directory))) = queue.heads.pop() else {
             break;
         };
-        let directory = parent(&first);
-        batch.push(first);
+        let files = &mut queue.directories[directory];
         while batch.len() < limit {
-            let Some(index) = queue.iter().position(|file| parent(file) == directory) else {
+            let Some((_, file)) = files.pop_front() else {
                 break;
             };
-            batch.push(queue.remove(index).expect("matching candidate exists"));
+            batch.push(file);
+        }
+        if let Some((rank, _)) = files.front() {
+            queue.heads.push(Reverse((*rank, directory)));
         }
     }
     batch
@@ -71,7 +105,7 @@ mod tests {
 
     #[test]
     fn largest_file_starts_each_batch_and_directory_neighbors_travel_together() {
-        let mut queue = VecDeque::from(
+        let mut queue = CandidateQueue::new(VecDeque::from(
             [
                 (1, "D:\\A\\one.bin"),
                 (2, "D:\\B\\two.bin"),
@@ -83,7 +117,7 @@ mod tests {
                 path: path.into(),
                 ..Default::default()
             }),
-        );
+        ));
         assert_eq!(
             take(&mut queue, 3)
                 .iter()

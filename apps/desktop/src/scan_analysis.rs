@@ -211,7 +211,7 @@ fn run_batch(
     candidates: VecDeque<FileRecord>,
     cached: u32,
 ) {
-    let queue = Mutex::new(candidates);
+    let queue = Mutex::new(grouping::CandidateQueue::new(candidates));
     let outcomes = Mutex::new(Outcomes {
         cached,
         ..Default::default()
@@ -250,8 +250,16 @@ fn run_batch(
                 state.progress.lock().unwrap().message =
                     format!("正在准备 {} 个文件的批量分析…", files.len());
                 let mut contexts = Vec::new();
+                let builder = ai::snapshot_builder(state, scan_id);
                 for file in files {
-                    match ai::snapshot_context(state, scan_id, file.id) {
+                    if budget.cancel.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    match builder
+                        .as_ref()
+                        .map_err(Clone::clone)
+                        .and_then(|builder| builder.build(file.id).map_err(error))
+                    {
                         Ok(context) => contexts.push(context),
                         Err(message) => {
                             let mut outcomes = outcomes.lock().unwrap();

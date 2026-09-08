@@ -14,17 +14,17 @@ fn with_index<T>(
     state.store.require_finished(scan).map_err(error)?;
     let policy = SafetyPolicy::new(state.store.settings().map_err(error)?);
     let (key, applications) = state.application_index(scan, &policy)?;
-    let mut cached = state.suggestions_snapshot.lock().unwrap();
     for _ in 0..3 {
-        if cached
-            .as_ref()
-            .is_some_and(|(old, index)| old == &key && index.is_current())
-        {
-            return read(&cached.as_ref().unwrap().1).map_err(error);
+        let index =
+            state
+                .suggestions_snapshot
+                .get(key.clone(), SuggestionIndex::is_current, || {
+                    suggestions::build_indexed(&state.store, scan, &policy, &applications)
+                        .map_err(error)
+                })?;
+        if index.is_current() {
+            return read(&index).map_err(error);
         }
-        let index = suggestions::build_indexed(&state.store, scan, &policy, &applications)
-            .map_err(error)?;
-        *cached = Some((key.clone(), index));
     }
     Err("分类依据已变化，请重新加载".into())
 }

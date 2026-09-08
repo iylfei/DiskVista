@@ -1,3 +1,4 @@
+use crate::snapshot_cache::SnapshotCache;
 use cleaner_domain::*;
 use cleaner_engine::{
     application_index::ApplicationIndex,
@@ -42,14 +43,18 @@ pub struct AppState {
     pub analysis_busy: AtomicBool,
     pub budgets: Mutex<HashMap<String, Budget>>,
     pub progress: Mutex<AnalysisProgress>,
-    pub units_snapshot: Mutex<Option<(String, Vec<ApplicationUnit>)>>,
-    pub origin_snapshot: Mutex<Option<(String, Arc<ApplicationIndex>)>>,
-    pub suggestions_snapshot: Mutex<Option<(String, cleaner_engine::suggestions::SuggestionIndex)>>,
+    pub units_snapshot: SnapshotCache<Vec<ApplicationUnit>>,
+    pub origin_snapshot: SnapshotCache<ApplicationIndex>,
+    pub suggestions_snapshot: SnapshotCache<cleaner_engine::suggestions::SuggestionIndex>,
     pub classified_queries: QueryCache,
+    pub database_revision: cleaner_engine::store::RevisionObserver,
+    pub analysis_validity: SnapshotCache<crate::analysis_results::Validity>,
 }
 impl AppState {
     pub fn new(store: Store) -> Shared {
         Arc::new(Self {
+            database_revision: cleaner_engine::store::RevisionObserver::new(store.clone()),
+            analysis_validity: SnapshotCache::default(),
             store,
             mutations: Mutex::new(()),
             initialized: Mutex::new(false),
@@ -62,9 +67,9 @@ impl AppState {
             analysis_busy: AtomicBool::new(false),
             budgets: Mutex::new(HashMap::new()),
             progress: Mutex::new(AnalysisProgress::default()),
-            units_snapshot: Mutex::new(None),
-            origin_snapshot: Mutex::new(None),
-            suggestions_snapshot: Mutex::new(None),
+            units_snapshot: SnapshotCache::default(),
+            origin_snapshot: SnapshotCache::default(),
+            suggestions_snapshot: SnapshotCache::default(),
             classified_queries: QueryCache::default(),
         })
     }
@@ -99,24 +104,27 @@ impl AppState {
                 .map_err(error)?
             )
         );
-        let mut cached = self.origin_snapshot.lock().unwrap();
-        if cached.as_ref().is_none_or(|(previous, _)| previous != &key) {
-            let index = if scan.status == "complete" {
-                ApplicationIndex::with_snapshot(&self.store, scan_id, &apps, policy)
-                    .map_err(error)?
-            } else {
-                ApplicationIndex::new(&apps, policy)
-            };
-            *cached = Some((key.clone(), Arc::new(index)));
-        }
-        Ok((key, Arc::clone(&cached.as_ref().unwrap().1)))
+        let index = self.origin_snapshot.get(
+            key.clone(),
+            |_| true,
+            || {
+                if scan.status == "complete" {
+                    ApplicationIndex::with_snapshot(&self.store, scan_id, &apps, policy)
+                        .map_err(error)
+                } else {
+                    Ok(ApplicationIndex::new(&apps, policy))
+                }
+            },
+        )?;
+        Ok((key, index))
     }
 
     pub fn invalidate_classification(&self) {
         self.classified_queries.clear();
-        *self.units_snapshot.lock().unwrap() = None;
-        *self.suggestions_snapshot.lock().unwrap() = None;
-        *self.origin_snapshot.lock().unwrap() = None;
+        self.analysis_validity.clear();
+        self.units_snapshot.clear();
+        self.suggestions_snapshot.clear();
+        self.origin_snapshot.clear();
     }
 
     pub(crate) fn with_classification<T>(
@@ -308,7 +316,7 @@ mod tests {
             .unwrap();
         assert_ne!(inventory_key, classification_key);
         state.invalidate_classification();
-        assert!(state.origin_snapshot.lock().unwrap().is_none());
+        assert!(state.origin_snapshot.is_empty());
         assert!(!Arc::ptr_eq(&initial, &cached));
     }
 }

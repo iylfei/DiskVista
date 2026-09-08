@@ -52,10 +52,8 @@ impl Store {
             removed += 1;
         }
         tx.commit()?;
-        if removed > 0 {
-            // If low disk space prevents compaction, SQLite still reuses the freed pages.
-            let _ = c.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;");
-        }
+        // Freed pages are reused by subsequent scans. Rebuilding the whole database here
+        // would hold up bootstrap and requires temporary free space on an already full disk.
         Ok(removed)
     }
 }

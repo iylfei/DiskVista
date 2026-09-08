@@ -91,6 +91,19 @@ fn current_results(
     scan: &str,
     ids: &[i64],
 ) -> Result<BTreeMap<i64, Vec<AnalysisResult>>, String> {
+    current_results_timed(state, scan, ids).map(|checked| checked.items)
+}
+
+struct CheckedResults {
+    items: BTreeMap<i64, Vec<AnalysisResult>>,
+    valid_until: Option<i64>,
+}
+
+fn current_results_timed(
+    state: &AppState,
+    scan: &str,
+    ids: &[i64],
+) -> Result<CheckedResults, String> {
     if ids.len() > 200 || ids.iter().any(|id| *id <= 0) {
         return Err("请提供最多 200 个有效文件 ID".into());
     }
@@ -99,7 +112,10 @@ fn current_results(
         grouped.entry(result.entry_id).or_default().push(result);
     }
     if grouped.is_empty() {
-        return Ok(grouped);
+        return Ok(CheckedResults {
+            items: grouped,
+            valid_until: None,
+        });
     }
     let settings = state.store.settings().map_err(error)?;
     let rules = RuleSet::load(settings.community_enabled).map_err(error)?;
@@ -118,18 +134,38 @@ fn current_results(
         None
     };
     let mut changed = Vec::new();
+    let mut valid_until = None;
     for (entry_id, results) in &mut grouped {
         let updates = reconcile(results, &config, true, || {
             builder
                 .as_ref()?
-                .build(*entry_id)
+                .build_with_expiry(*entry_id)
                 .ok()
-                .map(|context| context.fingerprint)
+                .map(|(context, expiry)| {
+                    valid_until = valid_until.into_iter().chain(expiry).min();
+                    context.fingerprint
+                })
         });
         changed.extend(updates.into_iter().map(|index| results[index].clone()));
     }
     state.store.save_analyses(&changed).map_err(error)?;
-    Ok(grouped)
+    Ok(CheckedResults {
+        items: grouped,
+        valid_until,
+    })
+}
+
+pub(crate) struct Validity {
+    ids: BTreeSet<i64>,
+    started: i64,
+    valid_until: Option<i64>,
+}
+
+impl Validity {
+    fn is_current(&self) -> bool {
+        let now = chrono::Utc::now().timestamp();
+        now >= self.started && self.valid_until.is_none_or(|until| now < until)
+    }
 }
 
 pub(crate) fn reusable_ids(
@@ -170,8 +206,48 @@ pub(crate) fn filter(
         return Ok(None);
     }
     AnalysisFilter::new(status, BTreeSet::new()).map_err(error)?;
-    let ids = state.store.analysis_entry_ids(scan).map_err(error)?;
-    AnalysisFilter::new(status, valid_ids(state, scan, &ids, false)?).map_err(error)
+    for _ in 0..3 {
+        let revision = state.database_revision.revision().map_err(error)?;
+        let settings = state.store.settings().map_err(error)?;
+        let rules = RuleSet::load(settings.community_enabled).map_err(error)?;
+        let policy = cleaner_engine::safety::SafetyPolicy::new(settings);
+        let key = serde_json::to_string(&(
+            scan,
+            revision,
+            rules.activation_key().map_err(error)?,
+            &policy.system_roots,
+            &policy.cloud_roots,
+            &policy.container_roots,
+        ))
+        .map_err(error)?;
+        let valid = state.analysis_validity.get(key, Validity::is_current, || {
+            let started = chrono::Utc::now().timestamp();
+            let ids = state.store.analysis_entry_ids(scan).map_err(error)?;
+            let mut valid = BTreeSet::new();
+            let mut valid_until = None;
+            for chunk in ids.chunks(200) {
+                let checked = current_results_timed(state, scan, chunk)?;
+                valid_until = valid_until.into_iter().chain(checked.valid_until).min();
+                for (id, results) in checked.items {
+                    if results
+                        .iter()
+                        .any(|result| result.status == "success" && result.assessment.is_some())
+                    {
+                        valid.insert(id);
+                    }
+                }
+            }
+            Ok(Validity {
+                ids: valid,
+                started,
+                valid_until,
+            })
+        })?;
+        if state.database_revision.revision().map_err(error)? == revision && valid.is_current() {
+            return AnalysisFilter::new(status, valid.ids.clone()).map_err(error);
+        }
+    }
+    Err("分析结果正在变化，请稍后重试".into())
 }
 
 fn summary(result: &AnalysisResult) -> AnalysisSummary {
@@ -355,16 +431,30 @@ mod tests {
             .unwrap()
             .unwrap()
             .matches(file.id));
+        let builds = state.analysis_validity.build_count();
         assert!(!filter(&state, "s", "unanalyzed")
             .unwrap()
             .unwrap()
             .matches(file.id));
+        assert_eq!(
+            builds,
+            state.analysis_validity.build_count(),
+            "pagination/filter toggles reuse validated IDs"
+        );
         assert!(summaries(&state, "different-scan", &[file.id])
             .unwrap()
             .is_empty());
         assert!(summaries(&state, "s", &vec![file.id; 201]).is_err());
         settings.llm.history_reference_enabled = false;
         state.store.put("settings", &settings).unwrap();
+        assert!(!filter(&state, "s", "analyzed")
+            .unwrap()
+            .unwrap()
+            .matches(file.id));
+        assert!(
+            state.analysis_validity.build_count() > builds,
+            "settings changes must bypass the cached result"
+        );
         let stale = summaries(&state, "s", &[file.id]).unwrap();
         assert_eq!(stale[0].status, "stale");
         assert_eq!(stale[0].history_match_count, 0);

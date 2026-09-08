@@ -7,11 +7,15 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+mod aggregation;
 mod analysis_usage;
+mod entry_data;
 mod history_paging;
 mod query;
 mod recycled_history;
 mod retention;
+mod revision;
+pub use revision::RevisionObserver;
 mod scan_deletion;
 mod subtrees;
 
@@ -52,6 +56,8 @@ impl Store {
           CREATE TABLE IF NOT EXISTS scans(id TEXT PRIMARY KEY, root TEXT NOT NULL, started INTEGER NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS entries(id INTEGER PRIMARY KEY, scan_id TEXT NOT NULL,path_key TEXT NOT NULL,parent_key TEXT NOT NULL,is_dir INTEGER NOT NULL,identity TEXT,logical INTEGER NOT NULL,allocated INTEGER,file_count INTEGER NOT NULL,complete INTEGER NOT NULL,blocked INTEGER NOT NULL,latest_change INTEGER NOT NULL,enumerated INTEGER NOT NULL,issue TEXT,risk TEXT NOT NULL,owner TEXT,rule_id TEXT,data TEXT NOT NULL,assessment TEXT NOT NULL,UNIQUE(scan_id,path_key));
           CREATE INDEX IF NOT EXISTS entries_parent ON entries(scan_id,parent_key);
+          CREATE INDEX IF NOT EXISTS entries_parent_size ON entries(scan_id,parent_key,logical DESC,id);
+          CREATE INDEX IF NOT EXISTS entries_executable_parents ON entries(scan_id,parent_key) WHERE is_dir=0 AND path_key LIKE '%.exe';
           CREATE INDEX IF NOT EXISTS entries_pending ON entries(scan_id,is_dir,enumerated);
           CREATE INDEX IF NOT EXISTS entries_size ON entries(scan_id,logical DESC);
           CREATE INDEX IF NOT EXISTS entries_identity ON entries(scan_id,identity);
@@ -159,6 +165,14 @@ impl Store {
         result
     }
     pub fn insert_batch(c: &mut Connection, scan_id: &str, files: &[FileRecord]) -> Result<()> {
+        Self::insert_scan_batch(c, scan_id, files, &[])
+    }
+    pub(crate) fn insert_scan_batch(
+        c: &mut Connection,
+        scan_id: &str,
+        files: &[FileRecord],
+        finished: &[(i64, Option<String>)],
+    ) -> Result<()> {
         let tx = c.transaction()?;
         {
             let mut stmt=tx.prepare_cached("INSERT OR REPLACE INTO entries(scan_id,path_key,parent_key,is_dir,identity,logical,allocated,file_count,complete,blocked,latest_change,enumerated,issue,risk,owner,rule_id,data,assessment) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)")?;
@@ -180,9 +194,17 @@ impl Store {
                     f.assessment.risk,
                     f.assessment.owner,
                     f.assessment.rule_id,
-                    serde_json::to_string(f)?,
+                    serde_json::to_string(&entry_data::Metadata(f))?,
                     serde_json::to_string(&f.assessment)?
                 ])?;
+            }
+        }
+        {
+            let mut stmt = tx.prepare_cached(
+                "UPDATE entries SET enumerated=1,complete=?3,issue=?4 WHERE scan_id=?1 AND id=?2",
+            )?;
+            for (id, error) in finished {
+                stmt.execute(params![scan_id, id, error.is_none(), error])?;
             }
         }
         tx.commit()?;
@@ -204,6 +226,13 @@ impl Store {
     }
     pub fn pending(&self, scan: &str, limit: usize) -> Result<Vec<FileRecord>> {
         let c = self.connection()?;
+        Self::pending_from(&c, scan, limit)
+    }
+    pub(crate) fn pending_from(
+        c: &Connection,
+        scan: &str,
+        limit: usize,
+    ) -> Result<Vec<FileRecord>> {
         let mut stmt = c.prepare(&format!(
             "SELECT {FIELDS} FROM entries WHERE scan_id=?1 AND is_dir=1 AND enumerated=0 LIMIT ?2"
         ))?;
@@ -259,25 +288,6 @@ impl Store {
                     serde_json::to_string(a)?
                 ])?;
             }
-        }
-        tx.commit()?;
-        Ok(())
-    }
-    pub fn aggregate(&self, scan: &str) -> Result<()> {
-        let mut c = self.connection()?;
-        // One file identity is charged once. Logical size still describes all directory entries.
-        c.execute("UPDATE entries SET allocated=0 WHERE scan_id=?1 AND is_dir=0 AND identity IS NOT NULL AND id NOT IN (SELECT MIN(id) FROM entries WHERE scan_id=?1 AND is_dir=0 AND identity IS NOT NULL GROUP BY identity)",[scan])?;
-        let dirs: Vec<(i64, String)> = {
-            let mut s=c.prepare("SELECT id,path_key FROM entries WHERE scan_id=?1 AND is_dir=1 ORDER BY length(path_key) DESC")?;
-            let rows = s
-                .query_map([scan], |r| Ok((r.get(0)?, r.get(1)?)))?
-                .collect::<rusqlite::Result<_>>()?;
-            rows
-        };
-        let tx = c.transaction()?;
-        for (id, path) in dirs {
-            let (logical,alloc,files,complete,blocked,changed):(u64,Option<u64>,u64,bool,bool,i64)=tx.query_row("SELECT COALESCE(SUM(logical),0), CASE WHEN COUNT(*)=COUNT(allocated) THEN COALESCE(SUM(allocated),0) ELSE NULL END,COALESCE(SUM(file_count),0),COALESCE(MIN(complete),1),COALESCE(MAX(blocked OR risk='protected'),0),COALESCE(MAX(latest_change),0) FROM entries WHERE scan_id=?1 AND parent_key=?2",params![scan,path],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?;
-            tx.execute("UPDATE entries SET logical=?2,allocated=?3,file_count=?4,complete=complete AND enumerated AND ?5,blocked=?6,latest_change=MAX(latest_change,?7) WHERE id=?1",params![id,logical,alloc,files,complete,blocked,changed])?;
         }
         tx.commit()?;
         Ok(())

@@ -260,16 +260,16 @@ pub async fn application_units(
         state.store.require_finished(&scan_id).map_err(error)?;
         let policy = SafetyPolicy::new(state.store.settings().map_err(error)?);
         let (key, index) = state.application_index(&scan_id, &policy)?;
-        let mut snapshot = state.units_snapshot.lock().unwrap();
-        if snapshot.as_ref().is_none_or(|(old, _)| old != &key) {
-            let units =
+        let units = state.units_snapshot.get(
+            key,
+            |_| true,
+            || {
                 cleaner_engine::units::build_indexed(&state.store, &scan_id, &policy, &index)
-                    .map_err(error)?;
-            *snapshot = Some((key, units));
-        }
-        let units = &snapshot.as_ref().unwrap().1;
+                    .map_err(error)
+            },
+        )?;
         Ok(cleaner_engine::units::page(
-            units,
+            &units,
             &search,
             offset as usize,
             limit as usize,

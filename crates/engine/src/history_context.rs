@@ -17,6 +17,7 @@ struct HistoricalEntry {
 #[derive(Default)]
 pub struct HistoryPool {
     entries: Vec<HistoricalEntry>,
+    valid_until: Option<i64>,
 }
 
 impl HistoryPool {
@@ -27,7 +28,13 @@ impl HistoryPool {
         let now = chrono::Utc::now().timestamp();
         let rows =
             store.recent_recycled_history(now - HISTORY_DAYS * 86_400, now, HISTORY_POOL_LIMIT)?;
-        Ok(Self::from_items(rows, policy, apps, now))
+        let mut pool = Self::from_items(rows, policy, apps, now);
+        let future: Option<i64> = store.connection()?.query_row(
+            "SELECT MIN(time) FROM history WHERE time>?1 AND json_extract(data,'$.status')='recycled'", [now], |row| row.get(0))?;
+        if let Some(future) = future {
+            pool.valid_until = Some(pool.valid_until.map_or(future, |old| old.min(future)));
+        }
+        Ok(pool)
     }
 
     fn from_items(
@@ -36,6 +43,15 @@ impl HistoryPool {
         apps: &[InstalledApp],
         now: i64,
     ) -> Self {
+        let valid_until = rows
+            .iter()
+            .map(|item| {
+                item.time
+                    .saturating_add(HISTORY_DAYS * 86_400)
+                    .saturating_add(1)
+            })
+            .filter(|&time| time > now)
+            .min();
         rows.sort_by(|a, b| b.time.cmp(&a.time).then_with(|| b.id.cmp(&a.id)));
         let mut seen = HashSet::new();
         let mut entries = Vec::new();
@@ -94,7 +110,14 @@ impl HistoryPool {
             );
             entries.push(HistoricalEntry { item, features });
         }
-        Self { entries }
+        Self {
+            entries,
+            valid_until,
+        }
+    }
+
+    pub fn valid_until(&self) -> Option<i64> {
+        self.valid_until
     }
 
     pub fn relevance(&self, file: &FileRecord) -> u32 {

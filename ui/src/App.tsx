@@ -22,6 +22,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { api } from "./lib/api";
+import { useSearchReady } from "./lib/useSearchReady";
 import type {
   Bootstrap,
   Scan,
@@ -85,7 +86,9 @@ export default function App() {
   const [items, setItems] = useState<FileRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [index, setIndex] = useState(0);
+  const fileQueryScope = useRef("");
   const [search, setSearch] = useState("");
+  const searchReady = useSearchReady(search);
   const [risk, setRisk] = useState("");
   const [analysisStatus, setAnalysisStatus] = useState("");
   const [sort, setSort] = useState("size");
@@ -213,8 +216,25 @@ export default function App() {
     }
     let live = true;
     setBusy(true);
+    const scope = JSON.stringify([
+      scan.id,
+      page,
+      parent,
+      search,
+      risk,
+      analysisStatus,
+      sort,
+    ]);
+    if (fileQueryScope.current !== scope) {
+      fileQueryScope.current = scope;
+      if (index !== 0) {
+        setIndex(0);
+        return;
+      }
+    }
+    if (!searchReady) return;
     setItems([]);
-    const timer = setTimeout(async () => {
+    void (async () => {
       setBusy(true);
       try {
         const q = {
@@ -242,10 +262,9 @@ export default function App() {
       } finally {
         if (live) setBusy(false);
       }
-    }, 160);
+    })();
     return () => {
       live = false;
-      clearTimeout(timer);
     };
   }, [
     scan?.id,
@@ -254,6 +273,7 @@ export default function App() {
     showMapFiles,
     parent,
     search,
+    searchReady,
     risk,
     analysisStatus,
     index,

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { FolderSearch, Search } from "lucide-react";
 import type { FileRecord, Scan, SuggestionPage } from "../lib/types";
 import { api } from "../lib/api";
+import { useSearchReady } from "../lib/useSearchReady";
 import { suggestionEmpty } from "../lib/emptyState";
 import EntryTable from "../components/EntryTable";
 import AnalysisFilter from "../components/AnalysisFilter";
@@ -40,6 +41,7 @@ export default function SuggestionsPage({
   const [data, setData] = useState<SuggestionPage | null>(null);
   const [group, setGroup] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const searchReady = useSearchReady(search);
   const [risk, setRisk] = useState("");
   const [analysisStatus, setAnalysisStatus] = useState("");
   const [sort, setSort] = useState("size");
@@ -84,31 +86,37 @@ export default function SuggestionsPage({
     setBusy(true);
     setData(null);
     setLoadError(false);
-    const timer = setTimeout(() => {
-      api<SuggestionPage>("cleanup_suggestions", { query: JSON.parse(key) })
-        .then((value) => {
-          if (live) {
-            setPage((previous) =>
-              Math.min(previous, Math.max(0, Math.ceil(value.total / 100) - 1)),
-            );
-            setData(value);
-          }
-        })
-        .catch((error) => {
-          if (live) {
-            setLoadError(true);
-            onError(error);
-          }
-        })
-        .finally(() => {
-          if (live) setBusy(false);
-        });
-    }, 180);
+    if (!searchReady) return;
+    api<SuggestionPage>("cleanup_suggestions", { query: JSON.parse(key) })
+      .then((value) => {
+        if (live) {
+          setPage((previous) =>
+            Math.min(previous, Math.max(0, Math.ceil(value.total / 100) - 1)),
+          );
+          setData(value);
+        }
+      })
+      .catch((error) => {
+        if (live) {
+          setLoadError(true);
+          onError(error);
+        }
+      })
+      .finally(() => {
+        if (live) setBusy(false);
+      });
     return () => {
       live = false;
-      clearTimeout(timer);
     };
-  }, [key, scan.status, revision, filteredAnalysisRevision, retry, onError]);
+  }, [
+    key,
+    searchReady,
+    scan.status,
+    revision,
+    filteredAnalysisRevision,
+    retry,
+    onError,
+  ]);
   function clear() {
     setSearch("");
     setRisk("");

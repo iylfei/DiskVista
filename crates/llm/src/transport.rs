@@ -1,9 +1,51 @@
 use crate::client::Budget;
 use anyhow::{anyhow, bail, Result};
 use cleaner_domain::LlmSettings;
-use reqwest::{blocking::Client, StatusCode, Url};
+use reqwest::{Client, StatusCode, Url};
 use serde_json::{json, Value};
-use std::{io::Read, sync::atomic::Ordering, time::Duration};
+use std::{
+    collections::VecDeque,
+    sync::{atomic::Ordering, Mutex, OnceLock},
+    time::Duration,
+};
+
+fn runtime() -> Result<&'static tokio::runtime::Runtime> {
+    static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .thread_name("ai-network")
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map_err(|_| anyhow!("AI 网络运行环境启动失败"))
+}
+
+fn pooled_client(url: &Url, timeout: u64) -> Result<Client> {
+    static CLIENTS: OnceLock<Mutex<VecDeque<(String, Client)>>> = OnceLock::new();
+    let cache = CLIENTS.get_or_init(Default::default);
+    let key = format!("{url}|{timeout}");
+    let mut cache = cache.lock().unwrap();
+    if let Some(position) = cache.iter().position(|(previous, _)| previous == &key) {
+        let entry = cache.remove(position).unwrap();
+        let client = entry.1.clone();
+        cache.push_front(entry);
+        return Ok(client);
+    }
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(timeout))
+        .connect_timeout(Duration::from_secs(15))
+        .pool_idle_timeout(Duration::from_secs(60))
+        .pool_max_idle_per_host(2)
+        .build()?;
+    cache.push_front((key, client.clone()));
+    cache.truncate(4);
+    Ok(client)
+}
 
 pub fn endpoint(base: &str) -> Result<Url> {
     let mut url = Url::parse(base.trim()).map_err(|_| anyhow!("API 地址格式无效"))?;
@@ -61,11 +103,7 @@ impl ChatClient {
         if settings.model.trim().is_empty() {
             bail!("请填写模型 ID");
         }
-        let client = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(settings.timeout_seconds.clamp(5, 300)))
-            .connect_timeout(Duration::from_secs(15))
-            .build()?;
+        let client = pooled_client(&url, settings.timeout_seconds.clamp(5, 300))?;
         Ok(Self { client, url })
     }
 
@@ -75,28 +113,50 @@ impl ChatClient {
         if let Some(key) = key.filter(|k| !k.is_empty()) {
             request = request.bearer_auth(key);
         }
-        let response = request.send().map_err(|e| {
-            anyhow!(if e.is_timeout() {
-                "AI 请求超时"
-            } else {
-                "AI 网络连接失败，请检查服务地址和网络"
-            })
-        })?;
-        let status = response.status();
         let byte_limit = response_byte_limit(body);
-        let mut raw = Vec::new();
-        response
-            .take(byte_limit + 1)
-            .read_to_end(&mut raw)
-            .map_err(|_| anyhow!("AI 服务响应读取失败"))?;
-        if raw.len() as u64 > byte_limit {
-            bail!("服务响应超过本次允许的大小限制，请检查模型输出或调整单次输出上限");
-        }
-        if budget.cancel.load(Ordering::Relaxed) {
-            bail!("分析已取消，响应已丢弃");
-        }
-        let raw = String::from_utf8(raw).map_err(|_| anyhow!("服务返回了无效 UTF-8 响应"))?;
-        Ok(ChatResponse { status, raw })
+        runtime()?.block_on(async {
+            let transfer = async {
+                let mut response = request.send().await.map_err(|error| {
+                    anyhow!(if error.is_timeout() {
+                        "AI 请求超时"
+                    } else {
+                        "AI 网络连接失败，请检查服务地址和网络"
+                    })
+                })?;
+                let status = response.status();
+                let mut raw = Vec::new();
+                while let Some(chunk) = response.chunk().await.map_err(|error| {
+                    anyhow!(if error.is_timeout() {
+                        "AI 请求超时"
+                    } else {
+                        "AI 服务响应读取失败"
+                    })
+                })? {
+                    if (raw.len() as u64).saturating_add(chunk.len() as u64) > byte_limit {
+                        bail!("服务响应超过本次允许的大小限制，请检查模型输出或调整单次输出上限");
+                    }
+                    raw.extend_from_slice(&chunk);
+                }
+                let raw =
+                    String::from_utf8(raw).map_err(|_| anyhow!("服务返回了无效 UTF-8 响应"))?;
+                Ok(ChatResponse { status, raw })
+            };
+            let mut transfer = std::pin::pin!(transfer);
+            loop {
+                if budget.cancel.load(Ordering::Relaxed) {
+                    bail!("分析已取消，响应已丢弃");
+                }
+                // Dropping the transfer on cancellation also drops an in-flight request/body read.
+                if let Ok(result) =
+                    tokio::time::timeout(Duration::from_millis(50), transfer.as_mut()).await
+                {
+                    if budget.cancel.load(Ordering::Relaxed) {
+                        bail!("分析已取消，响应已丢弃");
+                    }
+                    return result;
+                }
+            }
+        })
     }
 }
 
@@ -104,6 +164,9 @@ pub(crate) struct ChatResponse {
     status: StatusCode,
     raw: String,
 }
+
+#[cfg(test)]
+mod tests;
 
 impl ChatResponse {
     pub fn unsupported_format(&self) -> bool {

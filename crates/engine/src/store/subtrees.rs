@@ -14,7 +14,7 @@ impl Store {
         let limit = limit.clamp(1, 60);
         let c = self.connection()?;
         let mut statement = c.prepare(&format!(
-            "SELECT {FIELDS} FROM entries INDEXED BY entries_parent
+            "SELECT {FIELDS} FROM entries INDEXED BY entries_parent_size
              WHERE scan_id=?1 AND parent_key=?2 ORDER BY logical DESC,id LIMIT ?3"
         ))?;
         let mut rows = statement

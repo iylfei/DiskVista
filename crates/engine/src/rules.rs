@@ -39,6 +39,7 @@ pub struct RuleSet {
     pub rules: Vec<Rule>,
     matchers: Vec<Option<GlobMatcher>>,
     expanded_roots: Vec<Option<String>>,
+    expanded_excludes: Vec<Vec<String>>,
 }
 
 pub fn expand_env(value: &str) -> Option<String> {
@@ -105,10 +106,39 @@ impl RuleSet {
             .collect();
         Self {
             version,
+            expanded_excludes: rules
+                .iter()
+                .map(|rule| {
+                    rule.excludes
+                        .iter()
+                        .filter_map(|path| expand_env(path))
+                        .collect()
+                })
+                .collect(),
             rules,
             matchers,
             expanded_roots,
         }
+    }
+
+    pub fn activation_key(&self) -> Result<String> {
+        Ok(serde_json::to_string(&(
+            &self.version,
+            &self.expanded_roots,
+            &self.expanded_excludes,
+        ))?)
+    }
+
+    pub fn next_change(&self, file: &FileRecord, now: i64) -> Option<i64> {
+        let changed = file.modified.max(file.latest_change);
+        if changed <= 0 {
+            return None;
+        }
+        let rule = self.matching_rule(&normalize(&file.path))?;
+        let threshold = changed
+            .saturating_add(rule.age_days.saturating_mul(86_400))
+            .saturating_add(1);
+        (threshold > now).then_some(threshold)
     }
 
     #[cfg(test)]
@@ -129,18 +159,15 @@ impl RuleSet {
         self.rules
             .iter()
             .zip(&self.matchers)
-            .find_map(|(rule, matcher)| {
+            .zip(&self.expanded_excludes)
+            .find_map(|((rule, matcher), excludes)| {
                 let matches = matcher.as_ref().is_some_and(|m| {
                     std::iter::once(slash_path.as_str())
                         .chain(slash_path.match_indices('/').map(|(i, _)| &slash_path[..i]))
                         .any(|ancestor| m.is_match(ancestor))
                 });
-                (matches
-                    && !rule
-                        .excludes
-                        .iter()
-                        .any(|e| expand_env(e).is_some_and(|root| within(normalized_path, &root))))
-                .then_some(rule)
+                (matches && !excludes.iter().any(|root| within(normalized_path, root)))
+                    .then_some(rule)
             })
     }
 

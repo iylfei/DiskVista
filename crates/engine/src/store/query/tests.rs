@@ -91,6 +91,12 @@ fn directory_page_uses_parent_index_despite_many_larger_unrelated_rows() {
                 "{sort}, filtered={filtered}: {plan:?}"
             );
             assert!(!plan.iter().any(|line| line.contains("entries_size")));
+            if sort == "size" {
+                assert!(
+                    !plan.iter().any(|line| line.contains("TEMP B-TREE")),
+                    "{plan:?}"
+                );
+            }
             let count_plan = connection
                 .prepare(&format!(
                     "EXPLAIN QUERY PLAN {}",

@@ -18,7 +18,15 @@ fn count_sql(query: &EntryQuery, conditions: &str) -> String {
 }
 
 fn page_sql(query: &EntryQuery, conditions: &str) -> String {
-    let table = table(query);
+    let table = if query.parent.is_some()
+        && !matches!(
+            query.sort.as_deref(),
+            Some("name" | "activity" | "activity_desc" | "activity_asc")
+        ) {
+        "entries INDEXED BY entries_parent_size"
+    } else {
+        table(query)
+    };
     let sort = match query.sort.as_deref() {
         Some("name") => "path_key",
         Some("activity" | "activity_desc") => "latest_change DESC",

@@ -10,6 +10,7 @@ mod operations;
 mod scan_analysis;
 mod scans;
 mod settings_store;
+mod snapshot_cache;
 mod space_map;
 mod state;
 mod suggestions;

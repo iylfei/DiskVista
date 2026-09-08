@@ -34,12 +34,17 @@ pub(crate) fn snapshot_context(
     scan: &str,
     id: i64,
 ) -> Result<AnalysisContext, String> {
+    snapshot_builder(state, scan)?.build(id).map_err(error)
+}
+
+pub(crate) fn snapshot_builder<'a>(
+    state: &'a AppState,
+    scan: &str,
+) -> Result<context::ContextBuilder<'a>, String> {
     let settings = state.store.settings().map_err(error)?;
     let policy = cleaner_engine::safety::SafetyPolicy::new(settings);
     let (_, apps) = state.application_index(scan, &policy)?;
-    context::ContextBuilder::with_index(&state.store, scan, apps)
-        .and_then(|builder| builder.build(id))
-        .map_err(error)
+    context::ContextBuilder::with_index(&state.store, scan, apps).map_err(error)
 }
 pub(crate) fn analysis_config_hash(settings: &Settings, rule_version: &str) -> String {
     policy_config_hash(settings, client::config_hash(&settings.llm, rule_version))

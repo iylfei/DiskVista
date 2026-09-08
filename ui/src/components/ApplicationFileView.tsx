@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Search } from "lucide-react";
 import { api } from "../lib/api";
+import { useSearchReady } from "../lib/useSearchReady";
 import type { EntryPage, FileRecord } from "../lib/types";
 import EntryTable from "./EntryTable";
 import PathBreadcrumb from "./PathBreadcrumb";
@@ -39,7 +40,9 @@ export default function ApplicationFileView({
   const [items, setItems] = useState<FileRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
+  const queryScope = useRef("");
   const [search, setSearch] = useState("");
+  const searchReady = useSearchReady(search);
   const [sort, setSort] = useState("size");
   const [busy, setBusy] = useState(true);
   const [reload, setReload] = useState(0);
@@ -58,41 +61,58 @@ export default function ApplicationFileView({
     let live = true;
     setBusy(true);
     setItems([]);
-    const timer = setTimeout(() => {
-      api<EntryPage>("query_entries", {
-        query: {
-          scanId,
-          parent,
-          search: search || null,
-          risk: null,
-          analysisStatus: "",
-          suggestions: false,
-          minimumBytes: 0,
-          offset: page * 100,
-          limit: 100,
-          sort,
-        },
+    const scope = JSON.stringify([scanId, parent, search, sort]);
+    if (queryScope.current !== scope) {
+      queryScope.current = scope;
+      if (page !== 0) {
+        setPage(0);
+        return;
+      }
+    }
+    if (!searchReady) return;
+    api<EntryPage>("query_entries", {
+      query: {
+        scanId,
+        parent,
+        search: search || null,
+        risk: null,
+        analysisStatus: "",
+        suggestions: false,
+        minimumBytes: 0,
+        offset: page * 100,
+        limit: 100,
+        sort,
+      },
+    })
+      .then((result) => {
+        if (!live) return;
+        setPage((current) =>
+          Math.min(current, Math.max(0, Math.ceil(result.total / 100) - 1)),
+        );
+        setItems(result.items);
+        setTotal(result.total);
       })
-        .then((result) => {
-          if (!live) return;
-          setPage((current) =>
-            Math.min(current, Math.max(0, Math.ceil(result.total / 100) - 1)),
-          );
-          setItems(result.items);
-          setTotal(result.total);
-        })
-        .catch((error) => {
-          if (live) onError(error);
-        })
-        .finally(() => {
-          if (live) setBusy(false);
-        });
-    }, 160);
+      .catch((error) => {
+        if (live) onError(error);
+      })
+      .finally(() => {
+        if (live) setBusy(false);
+      });
     return () => {
       live = false;
-      clearTimeout(timer);
     };
-  }, [scanId, status, revision, parent, search, sort, page, reload, onError]);
+  }, [
+    scanId,
+    status,
+    revision,
+    parent,
+    search,
+    searchReady,
+    sort,
+    page,
+    reload,
+    onError,
+  ]);
 
   useEffect(() => setPage(0), [parent, search, sort]);
 

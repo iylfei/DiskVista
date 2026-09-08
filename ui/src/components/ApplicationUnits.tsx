@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Boxes, FolderOpen, Info, Search } from "lucide-react";
 import { api, bytes } from "../lib/api";
+import { useSearchReady } from "../lib/useSearchReady";
 import type { ApplicationUnitPage, FileRecord } from "../lib/types";
 import { startFileDetailLoad } from "../lib/fileDetail";
 import { unitCleanupBlockReason } from "../lib/cleanupTarget";
@@ -43,6 +44,7 @@ export default function ApplicationUnits({
 }) {
   const [data, setData] = useState<ApplicationUnitPage | null>(null);
   const [search, setSearch] = useState("");
+  const searchReady = useSearchReady(search);
   const [page, setPage] = useState(0);
   const [busy, setBusy] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -88,30 +90,38 @@ export default function ApplicationUnits({
     if (pending) return;
     let live = true;
     setBusy(true);
-    const timer = setTimeout(() => {
-      api<ApplicationUnitPage>("application_units", {
-        scanId,
-        search,
-        offset: page * 100,
-        limit: 100,
+    if (!searchReady) return;
+    api<ApplicationUnitPage>("application_units", {
+      scanId,
+      search,
+      offset: page * 100,
+      limit: 100,
+    })
+      .then((result) => {
+        if (!live) return;
+        setData(result);
+        setExpanded(search ? expandedSearchResults(result.items) : new Set());
       })
-        .then((result) => {
-          if (!live) return;
-          setData(result);
-          setExpanded(search ? expandedSearchResults(result.items) : new Set());
-        })
-        .catch((e) => {
-          if (live) onError(e);
-        })
-        .finally(() => {
-          if (live) setBusy(false);
-        });
-    }, 180);
+      .catch((e) => {
+        if (live) onError(e);
+      })
+      .finally(() => {
+        if (live) setBusy(false);
+      });
     return () => {
       live = false;
-      clearTimeout(timer);
     };
-  }, [scanId, status, pending, search, page, revision, reload, onError]);
+  }, [
+    scanId,
+    status,
+    pending,
+    search,
+    searchReady,
+    page,
+    revision,
+    reload,
+    onError,
+  ]);
 
   function inspect(
     entryId: number,

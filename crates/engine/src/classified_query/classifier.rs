@@ -91,15 +91,7 @@ impl<'a> Classifier<'a> {
 
     /// Earliest future age threshold that can invalidate this file's classification.
     pub fn next_change(&self, file: &FileRecord, started: i64) -> Option<i64> {
-        let changed = file.modified.max(file.latest_change);
-        if changed <= 0 {
-            return None;
-        }
-        let rule = self.rules.matching_rule(&normalize(&file.path))?;
-        let threshold = changed
-            .saturating_add(rule.age_days.saturating_mul(86_400))
-            .saturating_add(1);
-        (threshold > started).then_some(threshold)
+        self.rules.next_change(file, started)
     }
 
     pub(super) fn cacheable(&self) -> bool {

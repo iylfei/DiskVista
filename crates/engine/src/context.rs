@@ -87,10 +87,20 @@ impl<'a> ContextBuilder<'a> {
     }
 
     pub fn build(&self, id: i64) -> Result<AnalysisContext> {
+        self.build_with_expiry(id).map(|(context, _)| context)
+    }
+
+    pub fn build_with_expiry(&self, id: i64) -> Result<(AnalysisContext, Option<i64>)> {
         let store = self.store;
         let scan = self.scan.as_str();
         let policy = &self.policy;
         let mut f = store.entry(scan, id)?;
+        let valid_until = self
+            .rules
+            .next_change(&f, chrono::Utc::now().timestamp())
+            .into_iter()
+            .chain(self.history.valid_until())
+            .min();
         f.assessment = self.rules.classify_indexed(&f, policy, &self.apps);
         if !f.complete
             || f.has_blocked_children
@@ -165,7 +175,7 @@ impl<'a> ContextBuilder<'a> {
         hash.update(fingerprint(&selected));
         hash.update(serde_json::to_vec(&context)?);
         context.fingerprint = format!("{:x}", hash.finalize());
-        Ok(context)
+        Ok((context, valid_until))
     }
 }
 
