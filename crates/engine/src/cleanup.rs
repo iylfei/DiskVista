@@ -4,7 +4,7 @@ use cleaner_domain::*;
 use cleaner_platform::{filesystem, inventory, recycle};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -120,15 +120,20 @@ pub fn execute(
     let rules = crate::rules::RuleSet::load(policy.settings.community_enabled)?;
     let batch = uuid::Uuid::new_v4().to_string();
     let mut history = Vec::new();
-    let mut aborted = false;
+    struct Prepared {
+        history_index: usize,
+        volume: String,
+    }
+    let mut prepared = Vec::new();
+    let mut requests = Vec::new();
+    let mut free_before: HashMap<String, Option<u64>> = HashMap::new();
     for item in &preview.items {
-        let now = chrono::Utc::now().timestamp();
         let mut record = HistoryItem {
             id: uuid::Uuid::new_v4().to_string(),
             batch_id: batch.clone(),
             path: item.path.clone(),
             bytes: item.bytes,
-            time: now,
+            time: chrono::Utc::now().timestamp(),
             status: "skipped".into(),
             message: String::new(),
             free_space_delta: 0,
@@ -146,15 +151,12 @@ pub fn execute(
                     }
                 }),
         };
-        if aborted || cancel.load(Ordering::Relaxed) || !item.allowed {
-            record.message = if aborted {
-                "前一项无法确认安全回收，已停止批次，未处理此项".into()
-            } else if item.allowed {
+        if cancel.load(Ordering::Relaxed) || !item.allowed {
+            record.message = if item.allowed {
                 "用户取消，未处理剩余项目".into()
             } else {
                 item.reason.clone()
             };
-            store.add_history_for_scan(&record, &preview.scan_id)?;
             history.push(record);
             continue;
         }
@@ -169,7 +171,6 @@ pub fn execute(
             {
                 bail!("保护策略阻止：{reason}");
             }
-            ensure_not_in_use(&live)?;
             Ok(live.iter().filter(|f| !f.is_dir).fold(0u64, |total, f| {
                 total.saturating_add(f.logical_bytes.max(f.allocated_bytes.unwrap_or(0)))
             }))
@@ -177,13 +178,16 @@ pub fn execute(
         match validation() {
             Err(e) => record.message = format!("执行前复核未通过：{e:#}"),
             Ok(required_bytes) => {
-                let before = filesystem::free_space(&item.path[..3]).ok();
                 let path = item.path.clone();
+                let volume = item.path[..3].to_owned();
+                free_before
+                    .entry(volume.clone())
+                    .or_insert_with(|| filesystem::free_space(&volume).ok());
                 let fp = item.fingerprint.clone();
                 let policy = policy.clone();
                 let apps = apps.clone();
                 let item_cancel = cancel.clone();
-                let predelete = move || -> Result<()> {
+                let predelete = move || -> Result<u64> {
                     let live = live_tree_cancellable(&path, &item_cancel)?;
                     if fingerprint(&live) != fp {
                         bail!("回收开始前目标再次变化");
@@ -195,31 +199,69 @@ pub fn execute(
                         bail!("回收开始前保护策略阻止：{reason}");
                     }
                     ensure_not_in_use(&live)?;
-                    Ok(())
+                    Ok(live.iter().filter(|f| !f.is_dir).fold(0u64, |total, f| {
+                        total.saturating_add(f.logical_bytes.max(f.allocated_bytes.unwrap_or(0)))
+                    }))
                 };
-                match recycle::one(&item.path, required_bytes, predelete) {
-                    Ok(()) => {
-                        record.status = "recycled".into();
-                        record.message =
-                            "已确认移入 Windows 回收站；空间尚待回收站清空后释放".into();
-                        if let (Some(a), Ok(b)) = (before, filesystem::free_space(&item.path[..3]))
-                        {
-                            record.free_space_delta = (b as i128 - a as i128)
-                                .clamp(i64::MIN as i128, i64::MAX as i128)
-                                as i64;
-                        }
-                    }
-                    Err(e) => {
-                        aborted = true;
-                        record.status = "failed".into();
-                        record.message = format!("回收未确认成功，请检查回收站与原位置：{e:#}");
-                    }
-                }
+                prepared.push(Prepared {
+                    history_index: history.len(),
+                    volume,
+                });
+                requests.push(recycle::Request::new(
+                    item.path.clone(),
+                    required_bytes,
+                    predelete,
+                ));
             }
         }
-        record.time = chrono::Utc::now().timestamp();
-        store.add_history_for_scan(&record, &preview.scan_id)?;
         history.push(record);
+    }
+
+    let outcomes = match recycle::batch(requests, cancel.clone()) {
+        Ok(outcomes) => outcomes,
+        Err(error) => prepared
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                if index == 0 {
+                    recycle::Outcome::Failed(format!("回收批次无法启动：{error:#}"))
+                } else {
+                    recycle::Outcome::Skipped(
+                        "前一项无法确认安全回收，已停止批次，未处理此项".into(),
+                    )
+                }
+            })
+            .collect(),
+    };
+    let mut free_deltas: HashMap<String, i64> = free_before
+        .into_iter()
+        .filter_map(|(volume, before)| {
+            let before = before?;
+            let after = filesystem::free_space(&volume).ok()?;
+            Some((
+                volume,
+                (after as i128 - before as i128).clamp(i64::MIN as i128, i64::MAX as i128) as i64,
+            ))
+        })
+        .collect();
+    for (prepared, outcome) in prepared.into_iter().zip(outcomes) {
+        let record = &mut history[prepared.history_index];
+        record.time = chrono::Utc::now().timestamp();
+        match outcome {
+            recycle::Outcome::Recycled => {
+                record.status = "recycled".into();
+                record.message = "已确认移入 Windows 回收站；空间尚待回收站清空后释放".into();
+                record.free_space_delta = free_deltas.remove(&prepared.volume).unwrap_or(0);
+            }
+            recycle::Outcome::Failed(message) => {
+                record.status = "failed".into();
+                record.message = format!("回收未确认成功，请检查回收站与原位置：{message}");
+            }
+            recycle::Outcome::Skipped(message) => record.message = message,
+        }
+    }
+    for record in &history {
+        store.add_history_for_scan(record, &preview.scan_id)?;
     }
     Ok(history)
 }

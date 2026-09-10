@@ -18,6 +18,8 @@ fn main() {
             "set_annotation",
             "rules",
             "preview_cleanup",
+            "cleanup_check_progress",
+            "cancel_cleanup_check",
             "execute_cleanup",
             "cancel_cleanup",
             "history_page",

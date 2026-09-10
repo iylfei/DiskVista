@@ -26,6 +26,8 @@
     "allow-set-annotation",
     "allow-rules",
     "allow-preview-cleanup",
+    "allow-cleanup-check-progress",
+    "allow-cancel-cleanup-check",
     "allow-execute-cleanup",
     "allow-cancel-cleanup",
     "allow-history-page",

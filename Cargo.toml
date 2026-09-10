@@ -4,7 +4,7 @@ default-members = ["crates/domain", "crates/platform", "crates/engine", "crates/
 resolver = "2"
 
 [workspace.package]
-version = "0.2.5"
+version = "0.2.6"
 edition = "2021"
 publish = false
 license = "PolyForm-Noncommercial-1.0.0"

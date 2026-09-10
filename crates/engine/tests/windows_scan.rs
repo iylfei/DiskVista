@@ -291,26 +291,36 @@ fn parent_child_targets_are_deduplicated_and_cancelled_batch_is_safe() {
 
 #[test]
 #[ignore = "Creates and recycles only a unique test fixture; run explicitly"]
-fn recycle_only_owned_fixture() {
+fn recycle_owned_fixture_as_one_shell_batch() {
     let root =
         std::env::temp_dir().join(format!("DiskVista-Recycle-Test-{}", uuid::Uuid::new_v4()));
     fs::create_dir(&root).unwrap();
-    let path = root.join("可恢复的测试文件.txt");
-    fs::write(
-        &path,
-        "DiskVista recycle integration fixture; safe to restore.",
-    )
-    .unwrap();
+    let paths = [
+        root.join("可恢复的测试文件-1.txt"),
+        root.join("可恢复的测试文件-2.txt"),
+    ];
+    for path in &paths {
+        fs::write(
+            path,
+            "DiskVista recycle integration fixture; safe to restore.",
+        )
+        .unwrap();
+    }
     let db = tempfile::tempdir().unwrap();
     let store = Store::open(db.path().join("index.sqlite")).unwrap();
     let scan = scan_fixture(&root, &store);
-    let file = store.by_path(&scan.id, path.to_str().unwrap()).unwrap();
-    let p = cleanup::preview(&store, &scan.id, &[file.id]).unwrap();
-    assert!(p.items[0].allowed);
+    let ids: Vec<_> = paths
+        .iter()
+        .map(|path| store.by_path(&scan.id, path.to_str().unwrap()).unwrap().id)
+        .collect();
+    let p = cleanup::preview(&store, &scan.id, &ids).unwrap();
+    assert_eq!(p.items.len(), paths.len());
+    assert!(p.items.iter().all(|item| item.allowed));
     let result = cleanup::execute(&store, &p, true, Arc::new(AtomicBool::new(false))).unwrap();
-    println!("TEST ORIGINAL PATH: {}", path.display());
+    println!("TEST ORIGINAL PATHS: {paths:?}");
     println!("RESULT: {}", serde_json::to_string(&result).unwrap());
-    assert_eq!(result[0].status, "recycled");
-    assert!(!path.exists());
+    assert_eq!(result.len(), paths.len());
+    assert!(result.iter().all(|item| item.status == "recycled"));
+    assert!(paths.iter().all(|path| !path.exists()));
     // Keep the empty original directory so manual Recycle Bin restoration has a destination.
 }
