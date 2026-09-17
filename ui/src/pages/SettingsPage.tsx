@@ -113,7 +113,7 @@ export default function SettingsPage({
     <div className="settings-content">
       <section className="panel">
         <h2>界面语言</h2>
-        <label htmlFor="interface-language">
+        <label className="settings-language-row" htmlFor="interface-language">
           <span>语言</span>
           <select
             id="interface-language"

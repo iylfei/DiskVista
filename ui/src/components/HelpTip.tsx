@@ -1,4 +1,11 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 import { CircleHelp } from "lucide-react";
 import { helpPosition } from "../lib/helpPosition";
@@ -9,10 +16,15 @@ import "./help.css";
 export default function HelpTip({
   label,
   text,
+  variant = "help",
+  icon,
 }: {
   label: string;
   text: string;
+  variant?: "help" | "status";
+  icon?: ReactNode;
 }) {
+  const Anchor = variant === "status" ? "span" : "sup";
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
   const tip = useRef<HTMLDivElement>(null);
@@ -95,14 +107,20 @@ export default function HelpTip({
   }, [open]);
   return (
     <>
-      <sup className="help-anchor">
+      <Anchor
+        className={variant === "status" ? "help-status-anchor" : "help-anchor"}
+      >
         {/* Keep the superscript with the preceding character when text wraps. */}
-        {"\u2060"}
+        {variant === "help" && "\u2060"}
         <button
           ref={trigger}
           type="button"
           className="help-trigger"
-          aria-label={translateText(`关于${localizedLabel}`)}
+          aria-label={
+            variant === "status"
+              ? localizedLabel
+              : translateText(`关于${localizedLabel}`)
+          }
           aria-describedby={open ? id : undefined}
           onPointerEnter={show}
           onPointerLeave={scheduleClose}
@@ -114,16 +132,16 @@ export default function HelpTip({
             show();
           }}
         >
-          <CircleHelp size={12} aria-hidden="true" />
+          {icon ?? <CircleHelp size={12} aria-hidden="true" />}
         </button>
-      </sup>
+      </Anchor>
       {open &&
         createPortal(
           <div
             id={id}
             ref={tip}
             role="tooltip"
-            className="help-tooltip"
+            className={`help-tooltip${variant === "status" ? " help-status-tooltip" : ""}`}
             style={{
               left: position?.left ?? 0,
               top: position?.top ?? 0,

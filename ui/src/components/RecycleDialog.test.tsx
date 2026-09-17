@@ -120,7 +120,7 @@ describe("one-click basket recycle dialog", () => {
     );
   });
 
-  it("shows only progress and the retained backend safety guarantees while checking", () => {
+  it("shows a concise status while checking", () => {
     const html = renderToStaticMarkup(
       <RecycleDialog
         scanId="scan-one"
@@ -131,9 +131,7 @@ describe("one-click basket recycle dialog", () => {
       />,
     );
 
-    expect(html).toContain("正在进行安全检查，通过后将直接移入回收站");
-    expect(html).toContain("文件变化、保护状态、占用和回收站配置");
-    expect(html).toContain("不会永久删除");
+    expect(html).toContain("正在准备…");
     expect(html).not.toContain("实际回收预览");
     expect(html).not.toContain("本次回收大小");
     expect(html).not.toContain('type="checkbox"');
@@ -152,7 +150,7 @@ describe("one-click basket recycle dialog", () => {
     const html = renderToStaticMarkup(component);
 
     expect(component.props.closeDisabled).toBe(true);
-    expect(html).toContain("正在移入回收站，请等待操作完成");
+    expect(html).toContain("正在移入回收站…");
     expect(html).not.toContain("重试");
     expect(html).not.toContain("确认移入回收站");
     const cancelButton = buttons(component).find(
@@ -176,8 +174,8 @@ describe("one-click basket recycle dialog", () => {
     });
     const html = renderToStaticMarkup(component);
 
-    expect(html).toContain("已请求取消尚未开始的项目");
-    expect(html).toContain("取消请求失败：请求失败 &lt;script&gt;");
+    expect(html).toContain("正在取消剩余项…");
+    expect(html).toContain("取消失败：请求失败 &lt;script&gt;");
     expect(html).not.toContain("确认移入回收站");
     expect(
       buttons(component).find(

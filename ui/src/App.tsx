@@ -80,6 +80,7 @@ export default function App() {
   const scanIdRef = useRef<string | null>(null);
   const deletedScans = useRef(new Set<string>());
   const deletingScan = useRef<string | null>(null);
+  const [scanDeletion, setScanDeletion] = useState<Scan | null>(null);
   useLayoutEffect(() => {
     pageRef.current = page;
     scanIdRef.current = scan?.id ?? null;
@@ -304,6 +305,10 @@ export default function App() {
   }, [scan?.id, page, parent, search, risk, analysisStatus, sort]);
   async function start(root: string) {
     if (cleaning) return;
+    if (deletingScan.current) {
+      fail("请先等待扫描记录删除完成");
+      return;
+    }
     if (scanning) {
       fail("请先完成或取消当前扫描");
       return;
@@ -327,6 +332,10 @@ export default function App() {
   }
   async function browse() {
     if (cleaning) return;
+    if (deletingScan.current) {
+      fail("请先等待扫描记录删除完成");
+      return;
+    }
     try {
       const path = await api<string | null>("choose_folder");
       if (path) await start(path);
@@ -395,8 +404,12 @@ export default function App() {
   }
   const selected = new Set(pending.keys());
   async function deleteScan(target: Scan) {
-    if (deletingScan.current) throw new Error("已有扫描记录正在删除");
+    if (deletingScan.current) {
+      fail("已有扫描记录正在后台删除");
+      return;
+    }
     deletingScan.current = target.id;
+    setScanDeletion(target);
     try {
       const remaining = await api<Scan[]>("delete_scan", { scanId: target.id });
       deletedScans.current.add(target.id);
@@ -416,8 +429,11 @@ export default function App() {
         setDetail(null);
       }
       refresh();
+    } catch (error) {
+      fail(error);
     } finally {
       deletingScan.current = null;
+      setScanDeletion(null);
     }
   }
   const queued = new Set(basket.keys());
@@ -474,7 +490,7 @@ export default function App() {
                 settings={boot.settings.llm}
                 scan={scan}
                 active={boot.analysisProgress.active}
-                disabled={cleaning}
+                disabled={cleaning || !!scanDeletion}
                 onSettings={() => {
                   setDetail(null);
                   setPage("settings");
@@ -488,7 +504,10 @@ export default function App() {
                 onError={fail}
               />
             )}
-            <button onClick={browse} disabled={!!scanning || cleaning}>
+            <button
+              onClick={browse}
+              disabled={!!scanning || cleaning || !!scanDeletion}
+            >
               <FolderOpen size={16} />
               扫描文件夹
             </button>
@@ -574,8 +593,10 @@ export default function App() {
                       deleteDisabled={
                         !!scanning || cleaning || boot.analysisProgress.active
                       }
-                      onDelete={deleteScan}
+                      deletingScan={scanDeletion}
+                      onDelete={(target) => void deleteScan(target)}
                       onSelect={(s) => {
+                        scanIdRef.current = s.id;
                         setScan(s);
                         setParent(s.root);
                         setSearch("");
@@ -592,7 +613,7 @@ export default function App() {
                   <OverviewPage
                     volumes={boot.volumes}
                     locations={boot.scanLocations ?? []}
-                    disabled={!!scanning}
+                    disabled={!!scanning || !!scanDeletion}
                     scan={scan}
                     onScan={start}
                     onBrowse={browse}

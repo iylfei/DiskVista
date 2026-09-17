@@ -1,4 +1,9 @@
 const exactEnglish: Record<string, string> = {
+  "正在删除扫描记录…": "Deleting scan record…",
+  已有扫描记录正在后台删除:
+    "A scan record is already being deleted in the background",
+  请先等待扫描记录删除完成:
+    "Please wait for the scan record deletion to finish",
   等待开始检查: "Waiting to check",
   准备检查: "Preparing checks",
   读取扫描记录: "Reading scan records",
@@ -9,6 +14,10 @@ const exactEnglish: Record<string, string> = {
   安全检查完成: "Safety checks complete",
   安全检查已取消: "Safety checks cancelled",
   安全检查未完成: "Safety checks did not complete",
+  "正在准备…": "Preparing…",
+  "正在取消…": "Cancelling…",
+  "正在取消剩余项…": "Cancelling remaining items…",
+  "取消失败：": "Cancellation failed: ",
   "正在取消安全检查…": "Cancelling safety checks…",
   本阶段已检查: "Checked in this stage:",
   "取消检查失败：": "Could not cancel checks: ",
@@ -195,8 +204,8 @@ const exactEnglish: Record<string, string> = {
   还原窗口: "Restore window",
   含子项: "Includes components",
   合计: "Total",
-  "后台仍会检查文件变化、保护状态、占用和回收站配置。文件只会移入 Windows 回收站，不会永久删除。":
-    "DiskVista still checks file changes, protection status, usage, and Recycle Bin configuration. Files are moved only to the Windows Recycle Bin and are never permanently deleted.",
+  "回收前会检查文件占用和保护状态。文件只会移入 Windows 回收站，不会永久删除。":
+    "File usage and protection are checked before recycling. Files are moved only to the Windows Recycle Bin and are never permanently deleted.",
   忽略此项目: "Ignore this item",
   忽略的项目: "Ignored items",
   缓存: "Cache",

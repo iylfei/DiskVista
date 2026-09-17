@@ -1,4 +1,4 @@
-use crate::{context::fingerprint, safety::SafetyPolicy, store::Store};
+use crate::{safety::SafetyPolicy, store::Store};
 use anyhow::{bail, Result};
 use cleaner_domain::*;
 use cleaner_platform::{filesystem, inventory, recycle};
@@ -77,18 +77,44 @@ fn live_tree_with_progress(
     }
     Ok(out)
 }
-fn ensure_not_in_use(live: &[FileRecord]) -> Result<()> {
+fn ensure_not_in_use(live: &[FileRecord], cancel: &AtomicBool) -> Result<()> {
     let paths: Vec<_> = live
         .iter()
         .filter(|f| !f.is_dir)
         .map(|f| f.path.as_str())
         .collect();
-    let processes = cleaner_platform::process::locking_paths(&paths)?;
+    let processes = cleaner_platform::process::locking_paths_checked(&paths, |_| {
+        anyhow::ensure!(!cancel.load(Ordering::Relaxed), "用户取消，未处理剩余项目");
+        Ok(())
+    })?;
     if !processes.is_empty() {
         bail!("正在被使用：{}；请自行关闭应用", processes.join("、"));
     }
     Ok(())
 }
+fn prepare_recycle(
+    path: &str,
+    identity: &str,
+    policy: &SafetyPolicy,
+    apps: &crate::application_index::ApplicationIndex,
+    cancel: &AtomicBool,
+) -> Result<u64> {
+    let live = live_tree_cancellable(path, cancel)?;
+    if live.first().and_then(|file| file.identity.as_deref()) != Some(identity) {
+        bail!("目标已被替换，请重新选择");
+    }
+    if let Some(reason) = live
+        .iter()
+        .find_map(|f| policy.reason(f).or_else(|| apps.installed_reason(f)))
+    {
+        bail!("回收开始前保护策略阻止：{reason}");
+    }
+    ensure_not_in_use(&live, cancel)?;
+    Ok(live.iter().filter(|f| !f.is_dir).fold(0u64, |total, f| {
+        total.saturating_add(f.logical_bytes.max(f.allocated_bytes.unwrap_or(0)))
+    }))
+}
+
 pub fn execute(
     store: &Store,
     preview: &CleanupPreview,
@@ -111,12 +137,10 @@ pub fn execute(
     {
         bail!("预览后设置或保护规则发生变化，请重新生成预览");
     }
-    let apps = Arc::new(crate::application_index::ApplicationIndex::with_snapshot(
-        store,
-        &preview.scan_id,
+    let apps = Arc::new(crate::application_index::ApplicationIndex::new(
         &inventory::installed_apps(),
         &policy,
-    )?);
+    ));
     let rules = crate::rules::RuleSet::load(policy.settings.community_enabled)?;
     let batch = uuid::Uuid::new_v4().to_string();
     let mut history = Vec::new();
@@ -160,24 +184,21 @@ pub fn execute(
             history.push(record);
             continue;
         }
-        let validation = || -> Result<u64> {
-            let live = live_tree_cancellable(&item.path, &cancel)?;
-            if fingerprint(&live) != item.fingerprint {
-                bail!("目标身份、大小、时间或目录内容已变化");
-            }
-            if let Some(reason) = live
-                .iter()
-                .find_map(|f| policy.reason(f).or_else(|| apps.installed_reason(f)))
+        let validation = || -> Result<()> {
+            // Fail early for a missing or protected target; enumerate only in the Shell callback.
+            let root = filesystem::validate_local_path(&item.path)?;
+            let file = filesystem::inspect(&root)?;
+            if let Some(reason) = policy
+                .reason(&file)
+                .or_else(|| apps.installed_reason(&file))
             {
                 bail!("保护策略阻止：{reason}");
             }
-            Ok(live.iter().filter(|f| !f.is_dir).fold(0u64, |total, f| {
-                total.saturating_add(f.logical_bytes.max(f.allocated_bytes.unwrap_or(0)))
-            }))
+            Ok(())
         };
         match validation() {
             Err(e) => record.message = format!("执行前复核未通过：{e:#}"),
-            Ok(required_bytes) => {
+            Ok(()) => {
                 let path = item.path.clone();
                 let volume = item.path[..3].to_owned();
                 free_before
@@ -188,30 +209,13 @@ pub fn execute(
                 let apps = Arc::clone(&apps);
                 let item_cancel = cancel.clone();
                 let predelete = move || -> Result<u64> {
-                    let live = live_tree_cancellable(&path, &item_cancel)?;
-                    if fingerprint(&live) != fp {
-                        bail!("回收开始前目标再次变化");
-                    }
-                    if let Some(reason) = live
-                        .iter()
-                        .find_map(|f| policy.reason(f).or_else(|| apps.installed_reason(f)))
-                    {
-                        bail!("回收开始前保护策略阻止：{reason}");
-                    }
-                    ensure_not_in_use(&live)?;
-                    Ok(live.iter().filter(|f| !f.is_dir).fold(0u64, |total, f| {
-                        total.saturating_add(f.logical_bytes.max(f.allocated_bytes.unwrap_or(0)))
-                    }))
+                    prepare_recycle(&path, &fp, &policy, &apps, &item_cancel)
                 };
                 prepared.push(Prepared {
                     history_index: history.len(),
                     volume,
                 });
-                requests.push(recycle::Request::new(
-                    item.path.clone(),
-                    required_bytes,
-                    predelete,
-                ));
+                requests.push(recycle::Request::new(item.path.clone(), predelete));
             }
         }
         history.push(record);
@@ -269,6 +273,42 @@ pub fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn recycle_check_accepts_content_changes_but_blocks_replacements_locks_and_protected_children()
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("target");
+        std::fs::create_dir(&path).unwrap();
+        let child = path.join("note.txt");
+        std::fs::write(&child, "before").unwrap();
+        let identity = filesystem::inspect(&path).unwrap().identity.unwrap();
+        let policy = SafetyPolicy::new(Settings::default());
+        let apps = crate::application_index::ApplicationIndex::new(&[], &policy);
+        let cancel = AtomicBool::new(false);
+        let check = |id: &str| prepare_recycle(path.to_str().unwrap(), id, &policy, &apps, &cancel);
+        std::fs::write(&child, "changed since selection").unwrap();
+        assert!(check(&identity).is_ok());
+        assert!(check("different-file-id")
+            .unwrap_err()
+            .to_string()
+            .contains("替换"));
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&child)
+            .unwrap();
+        assert!(check(&identity).is_err());
+        drop(lock);
+        std::fs::write(path.join(".env"), "SYNTHETIC=value").unwrap();
+        assert!(check(&identity)
+            .unwrap_err()
+            .to_string()
+            .contains("保护策略"));
+        cancel.store(true, Ordering::Relaxed);
+        assert!(check(&identity).unwrap_err().to_string().contains("取消"));
+    }
+
     #[test]
     fn root_is_never_target() {
         let d = tempfile::tempdir().unwrap();

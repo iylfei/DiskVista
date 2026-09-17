@@ -160,7 +160,7 @@ export default function SuggestionsPage({
       </div>
     );
   return (
-    <section className="suggestions-content">
+    <section className="suggestions-content" data-group={group}>
       <p className="suggestions-intro">
         按类别查找文件，勾选后添加到待清理清单。
         {busy && data && !filesShown && (

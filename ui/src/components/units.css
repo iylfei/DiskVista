@@ -118,6 +118,14 @@
   white-space: nowrap;
   line-height: 18px;
 }
+.unit-tree-row[data-depth="0"] .unit-row-with-note > .unit-size {
+  grid-column: 3;
+  grid-row: 1 / 3;
+  align-self: center;
+}
+.unit-tree-row[data-depth="0"] .unit-row-with-note > .unit-note {
+  grid-column: 2;
+}
 .unit-name {
   min-width: 0;
 }

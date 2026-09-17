@@ -25,7 +25,7 @@ fn scan_fixture(root: &std::path::Path, store: &Store) -> Scan {
     store.scan(&scan.id).unwrap()
 }
 #[test]
-fn scans_unicode_hardlinks_long_paths_and_validates_changes() {
+fn scans_unicode_hardlinks_long_paths_and_allows_content_changes() {
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path().join("测试目录");
     fs::create_dir(&root).unwrap();
@@ -51,7 +51,7 @@ fn scans_unicode_hardlinks_long_paths_and_validates_changes() {
     assert_eq!(p.items[0].bytes, 0);
     fs::write(root.join("普通文件.txt"), "变化后内容").unwrap();
     let changed = cleanup::preview(&store, &s.id, &[file.id]).unwrap();
-    assert!(!changed.items[0].allowed);
+    assert!(changed.items[0].allowed);
 }
 #[test]
 fn protected_descendants_and_content_consent() {
@@ -220,7 +220,7 @@ fn incremental_seed_replaces_changed_subtrees_and_preserves_unaffected_data() {
 }
 
 #[test]
-fn changed_or_locked_targets_are_skipped_without_recycling() {
+fn locked_targets_are_skipped_without_recycling() {
     use std::os::windows::fs::OpenOptionsExt;
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path().join("guard");
@@ -234,16 +234,20 @@ fn changed_or_locked_targets_are_skipped_without_recycling() {
     let preview = cleanup::preview(&store, &scan.id, &[f.id]).unwrap();
     assert!(preview.items[0].allowed);
     fs::write(&path, "changed after preview").unwrap();
-    let result =
-        cleanup::execute(&store, &preview, true, Arc::new(AtomicBool::new(false))).unwrap();
-    assert_eq!(result[0].status, "skipped");
-    assert!(path.exists());
     let _lock = fs::OpenOptions::new()
         .read(true)
         .share_mode(0)
         .open(&path)
         .unwrap();
-    assert!(!cleanup::preview(&store, &scan.id, &[f.id]).unwrap().items[0].allowed);
+    let result =
+        cleanup::execute(&store, &preview, true, Arc::new(AtomicBool::new(false))).unwrap();
+    assert!(
+        matches!(result[0].status.as_str(), "skipped" | "failed"),
+        "{:?}",
+        result
+    );
+    assert!(path.exists());
+    assert!(!result[0].message.is_empty());
 }
 
 #[test]

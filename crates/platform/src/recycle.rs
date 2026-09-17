@@ -1,11 +1,8 @@
 use crate::{filesystem, wide};
 use anyhow::{anyhow, bail, Result};
-use std::{
-    collections::HashMap,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
 };
 use windows::{
     core::{implement, Ref, HRESULT, PCWSTR},
@@ -181,19 +178,13 @@ impl IFileOperationProgressSink_Impl for Sink_Impl {
 
 pub struct Request {
     path: String,
-    estimated_bytes: u64,
     check: Box<dyn Fn() -> Result<u64> + Send>,
 }
 
 impl Request {
-    pub fn new(
-        path: impl Into<String>,
-        estimated_bytes: u64,
-        check: impl Fn() -> Result<u64> + Send + 'static,
-    ) -> Self {
+    pub fn new(path: impl Into<String>, check: impl Fn() -> Result<u64> + Send + 'static) -> Self {
         Self {
             path: path.into(),
-            estimated_bytes,
             check: Box::new(check),
         }
     }
@@ -262,8 +253,7 @@ fn availability(path: &str, required_bytes: u64) -> Result<()> {
     Ok(())
 }
 
-fn initial_availability(requests: &[Request], cancel: &AtomicBool) -> Result<bool> {
-    let mut volumes: HashMap<String, (String, u64)> = HashMap::new();
+fn validate_requests(requests: &[Request], cancel: &AtomicBool) -> Result<bool> {
     for request in requests {
         if cancel.load(Ordering::Relaxed) {
             return Ok(false);
@@ -272,17 +262,6 @@ fn initial_availability(requests: &[Request], cancel: &AtomicBool) -> Result<boo
         if request.path.len() <= 3 {
             bail!("不能回收卷根目录");
         }
-        let volume = request.path[..3].to_ascii_uppercase();
-        let entry = volumes
-            .entry(volume)
-            .or_insert_with(|| (request.path.clone(), 0));
-        entry.1 = entry.1.saturating_add(request.estimated_bytes);
-    }
-    for (_, (path, required_bytes)) in volumes {
-        if cancel.load(Ordering::Relaxed) {
-            return Ok(false);
-        }
-        availability(&path, required_bytes)?;
     }
     Ok(true)
 }
@@ -346,7 +325,7 @@ pub fn batch(requests: Vec<Request>, cancel: Arc<AtomicBool>) -> Result<Vec<Outc
             .map(|_| Outcome::Skipped("用户取消，未处理剩余项目".into()))
             .collect());
     }
-    if !initial_availability(&requests, &cancel)? {
+    if !validate_requests(&requests, &cancel)? {
         return Ok(requests
             .iter()
             .map(|_| Outcome::Skipped("用户取消，未处理剩余项目".into()))
@@ -420,7 +399,7 @@ pub fn one(
     check: impl Fn() -> Result<()> + Send + 'static,
 ) -> Result<()> {
     let outcomes = batch(
-        vec![Request::new(path, required_bytes, move || {
+        vec![Request::new(path, move || {
             check()?;
             Ok(required_bytes)
         })],

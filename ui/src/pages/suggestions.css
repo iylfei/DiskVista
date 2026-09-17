@@ -104,3 +104,16 @@
     padding: 12px;
   }
 }
+
+.suggestions-content[data-group="large-files"] .file-row {
+  grid-template-columns:
+    24px minmax(170px, 2.3fr) minmax(100px, 0.85fr) minmax(100px, 1.45fr)
+    minmax(105px, 1fr) var(--file-actions-width, 25px);
+}
+@media (max-width: 1180px) {
+  .suggestions-content[data-group="large-files"] .file-row {
+    grid-template-columns:
+      20px minmax(145px, 2fr) 82px minmax(85px, 1fr)
+      103px var(--file-actions-width, 18px);
+  }
+}

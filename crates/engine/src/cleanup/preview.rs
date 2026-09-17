@@ -1,23 +1,17 @@
-use super::live_tree_with_progress;
-use crate::{context::fingerprint_checked, safety::SafetyPolicy, store::Store};
+use crate::{safety::SafetyPolicy, store::Store};
 use anyhow::{bail, Result};
 use cleaner_domain::*;
 use cleaner_platform::{filesystem, normalize, within};
 use sha2::{Digest, Sha256};
-use std::{
-    path::Path,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-    time::{Duration, Instant},
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
 };
 
 struct Reporter<F> {
     cancel: Arc<AtomicBool>,
     value: CleanupCheckProgress,
     send: F,
-    sent: Instant,
 }
 impl<F: FnMut(CleanupCheckProgress)> Reporter<F> {
     fn new(cancel: Arc<AtomicBool>, total: usize, send: F) -> Self {
@@ -31,7 +25,6 @@ impl<F: FnMut(CleanupCheckProgress)> Reporter<F> {
                 checked_entries: 0,
             },
             send,
-            sent: Instant::now(),
         }
     }
     fn check(&self) -> Result<()> {
@@ -41,7 +34,6 @@ impl<F: FnMut(CleanupCheckProgress)> Reporter<F> {
     fn publish(&mut self) -> Result<()> {
         self.check()?;
         (self.send)(self.value.clone());
-        self.sent = Instant::now();
         self.check()
     }
     fn stage(&mut self, stage: CleanupCheckStage) -> Result<()> {
@@ -49,27 +41,6 @@ impl<F: FnMut(CleanupCheckProgress)> Reporter<F> {
         self.value.checked_entries = 0;
         self.publish()
     }
-    fn visited(&mut self, count: usize) -> Result<()> {
-        self.check()?;
-        self.value.checked_entries = count;
-        if count.is_multiple_of(64) || self.sent.elapsed() >= Duration::from_millis(100) {
-            self.publish()?;
-        }
-        Ok(())
-    }
-}
-
-fn check_usage(files: &[FileRecord], progress: impl FnMut(usize) -> Result<()>) -> Result<()> {
-    let paths: Vec<_> = files
-        .iter()
-        .filter(|f| !f.is_dir)
-        .map(|f| f.path.as_str())
-        .collect();
-    let processes = cleaner_platform::process::locking_paths_checked(&paths, progress)?;
-    if !processes.is_empty() {
-        bail!("正在被使用：{}；请自行关闭应用", processes.join("、"));
-    }
-    Ok(())
 }
 
 pub fn preview(store: &Store, scan_id: &str, ids: &[i64]) -> Result<CleanupPreview> {
@@ -134,69 +105,35 @@ pub fn preview_with_progress(
             items.push(blocked(&file, &reason));
             continue;
         }
-        report.stage(CleanupCheckStage::Snapshot)?;
-        let descendants = match store.descendants_bounded_with_progress(
-            scan_id,
-            &file.path,
-            100_000,
-            report.cancel.clone(),
-            |count| report.visited(count),
-        ) {
-            Ok(files) => files,
-            Err(e) => {
-                report.check()?;
-                items.push(blocked(&file, &format!("无法核验：{e:#}")));
-                continue;
-            }
-        };
-        let snapshot_fingerprint = fingerprint_checked(&descendants, || report.check())?;
-        drop(descendants);
-        report.stage(CleanupCheckStage::Filesystem)?;
-        let flag = report.cancel.clone();
-        let live = match live_tree_with_progress(&file.path, &flag, |count| report.visited(count)) {
-            Ok(live) => live,
-            Err(e) => {
-                report.check()?;
-                items.push(blocked(&file, &format!("无法核验：{e:#}")));
-                continue;
-            }
-        };
         report.stage(CleanupCheckStage::Protection)?;
-        let live_fingerprint = fingerprint_checked(&live, || report.check())?;
-        if snapshot_fingerprint != live_fingerprint {
-            items.push(blocked(&file, "扫描后目标发生变化，请刷新后重新选择"));
-            continue;
-        }
-        let mut protected_reason = None;
-        for (index, f) in live.iter().enumerate() {
-            report.visited(index + 1)?;
-            if let Some(reason) = policy.reason(f).or_else(|| apps.installed_reason(f)) {
-                protected_reason = Some(reason);
-                break;
+        let current = match filesystem::validate_local_path(&file.path)
+            .and_then(|path| filesystem::inspect(&path))
+        {
+            Ok(current) => current,
+            Err(error) => {
+                items.push(blocked(&file, &format!("无法读取目标：{error:#}")));
+                continue;
             }
-        }
-        if let Some(reason) = protected_reason {
-            items.push(blocked(&file, &format!("当前目标包含受保护内容：{reason}")));
+        };
+        if let Some(reason) = policy
+            .reason(&current)
+            .or_else(|| apps.installed_reason(&current))
+        {
+            items.push(blocked(&file, &reason));
             continue;
         }
-        report.stage(CleanupCheckStage::Usage)?;
-        if let Err(e) = check_usage(&live, |count| report.visited(count)) {
-            report.check()?;
-            items.push(blocked(&file, &format!("占用检查未通过：{e:#}")));
+        let Some(identity) = current.identity else {
+            items.push(blocked(&file, "无法识别目标文件"));
             continue;
-        }
-        // Inspect actual link counts at preview; enumerated directory records do not include them.
-        report.stage(CleanupCheckStage::Size)?;
-        let mut bytes = 0u64;
-        for (index, file) in live.iter().filter(|f| !f.is_dir).enumerate() {
-            report.visited(index + 1)?;
-            if let Ok(file) = filesystem::inspect(Path::new(&file.path)) {
-                if file.links <= 1 {
-                    bytes =
-                        bytes.saturating_add(file.allocated_bytes.unwrap_or(file.logical_bytes));
-                }
-            }
-        }
+        };
+        // Directory sizes are estimates from the scan; do not reopen every file to count bytes.
+        let bytes = if current.is_dir {
+            file.allocated_bytes.unwrap_or(file.logical_bytes)
+        } else if current.links > 1 {
+            0
+        } else {
+            current.allocated_bytes.unwrap_or(current.logical_bytes)
+        };
         report.check()?;
         accepted.push(file.path.clone());
         let risk = rules.classify_indexed(&file, &policy, &apps).risk;
@@ -204,11 +141,10 @@ pub fn preview_with_progress(
             entry_id: file.id,
             path: file.path,
             bytes,
-            fingerprint: live_fingerprint,
+            fingerprint: identity,
             risk,
             allowed: true,
-            reason: "已核对当前身份、大小、修改时间、后代、保护状态和占用；执行前仍会再次核验"
-                .into(),
+            reason: "回收前检查文件占用及受保护路径".into(),
         });
     }
     report.value.targets_done = report.value.targets_total;

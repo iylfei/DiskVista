@@ -54,3 +54,16 @@ button.help-trigger:focus-visible {
   margin: 0;
   line-height: 1.7;
 }
+.help-status-anchor {
+  display: inline-flex;
+  vertical-align: middle;
+}
+.help-status-tooltip {
+  width: max-content;
+  max-width: min(300px, calc(100vw - 24px));
+  padding: 8px 10px;
+  border-radius: 6px;
+}
+.help-status-tooltip > p {
+  white-space: pre-line;
+}

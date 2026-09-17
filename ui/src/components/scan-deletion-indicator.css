@@ -1,0 +1,29 @@
+.scan-deletion-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  margin-left: auto;
+  color: var(--muted);
+}
+.scan-deletion-indicator .help-trigger {
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  padding: 4px;
+}
+.scan-deletion-indicator .help-trigger > svg {
+  animation: scan-deletion-spin 1s linear infinite;
+}
+@keyframes scan-deletion-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .scan-deletion-indicator .help-trigger > svg {
+    animation: none;
+  }
+}
