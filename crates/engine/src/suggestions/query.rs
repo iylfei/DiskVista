@@ -2,14 +2,14 @@ use super::*;
 use crate::recycled_targets::RecycledTargets;
 use anyhow::bail;
 
-#[derive(PartialEq, Eq)]
-struct Key {
-    search: String,
-    risk: String,
-    group: Option<String>,
-    sort: String,
-    analysis: Option<AnalysisFilter>,
-    recycled: RecycledTargets,
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct Key {
+    pub(super) search: String,
+    pub(super) risk: String,
+    pub(super) group: Option<String>,
+    pub(super) sort: String,
+    pub(super) analysis: Option<AnalysisFilter>,
+    pub(super) recycled: RecycledTargets,
 }
 pub(super) struct View {
     key: Key,
@@ -101,21 +101,29 @@ fn build_view(index: &SuggestionIndex, key: Key) -> View {
     }
 }
 
-fn with_view<T>(
+pub(super) fn key(
     index: &SuggestionIndex,
     query: &SuggestionQuery,
     analysis: Option<&AnalysisFilter>,
-    read: impl FnOnce(&View) -> T,
-) -> Result<T> {
+) -> Result<Key> {
     let scan = index.store.require_finished(&index.scan_id)?;
-    let key = Key {
+    Ok(Key {
         search: normalize(&query.search),
         risk: query.risk.clone(),
         group: query.group.clone(),
         sort: query.sort.clone(),
         analysis: analysis.cloned(),
         recycled: RecycledTargets::load(&index.store, &scan)?,
-    };
+    })
+}
+
+fn with_view<T>(
+    index: &SuggestionIndex,
+    query: &SuggestionQuery,
+    analysis: Option<&AnalysisFilter>,
+    read: impl FnOnce(&View) -> T,
+) -> Result<T> {
+    let key = key(index, query, analysis)?;
     let mut cache = index.views.lock().unwrap();
     if let Some(position) = cache.iter().position(|v| v.key == key) {
         let view = cache.remove(position).unwrap();
@@ -139,6 +147,10 @@ pub fn page_with_analysis(
     analysis: Option<&AnalysisFilter>,
 ) -> Result<SuggestionPage> {
     AnalysisFilter::validate(&query.analysis_status, analysis)?;
+    if let Some(disk) = &index.disk {
+        return disk.page(index, query, analysis);
+    }
+
     let (groups, total, selected) = with_view(index, query, analysis, |view| {
         (
             view.groups.clone(),
@@ -174,6 +186,9 @@ pub fn selection_with_analysis(
         .is_some_and(|id| id.starts_with("rule:"))
     {
         bail!("请逐项选择用途未识别的大文件");
+    }
+    if let Some(disk) = &index.disk {
+        return disk.selection(index, query, analysis);
     }
     let selected: Vec<_> = with_view(index, query, analysis, |view| {
         view.indices

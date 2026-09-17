@@ -102,7 +102,7 @@ pub fn execute(
         bail!("未知或个人数据需要额外确认");
     }
     store.require_finished(&preview.scan_id)?;
-    let policy = SafetyPolicy::new(store.settings()?);
+    let policy = Arc::new(SafetyPolicy::new(store.settings()?));
     if preview.policy_fingerprint
         != format!(
             "{:x}",
@@ -111,12 +111,12 @@ pub fn execute(
     {
         bail!("预览后设置或保护规则发生变化，请重新生成预览");
     }
-    let apps = crate::application_index::ApplicationIndex::with_snapshot(
+    let apps = Arc::new(crate::application_index::ApplicationIndex::with_snapshot(
         store,
         &preview.scan_id,
         &inventory::installed_apps(),
         &policy,
-    )?;
+    )?);
     let rules = crate::rules::RuleSet::load(policy.settings.community_enabled)?;
     let batch = uuid::Uuid::new_v4().to_string();
     let mut history = Vec::new();
@@ -184,8 +184,8 @@ pub fn execute(
                     .entry(volume.clone())
                     .or_insert_with(|| filesystem::free_space(&volume).ok());
                 let fp = item.fingerprint.clone();
-                let policy = policy.clone();
-                let apps = apps.clone();
+                let policy = Arc::clone(&policy);
+                let apps = Arc::clone(&apps);
                 let item_cancel = cancel.clone();
                 let predelete = move || -> Result<u64> {
                     let live = live_tree_cancellable(&path, &item_cancel)?;

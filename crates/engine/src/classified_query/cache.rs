@@ -5,7 +5,7 @@ use cleaner_domain::{EntryPage, EntryQuery};
 use std::{
     collections::VecDeque,
     fmt,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Condvar, Mutex, OnceLock},
 };
 
 #[derive(Debug)]
@@ -40,12 +40,14 @@ struct Slot {
 #[derive(Default)]
 struct CacheState {
     revision: u64,
+    active: usize,
     views: VecDeque<Arc<Slot>>,
 }
 
 #[derive(Default)]
 pub struct QueryCache {
     state: Mutex<CacheState>,
+    ready: Condvar,
     counts: crate::store::CountCache,
     #[cfg(test)]
     builds: std::sync::atomic::AtomicUsize,
@@ -60,6 +62,7 @@ impl QueryCache {
         let mut state = self.state.lock().unwrap();
         state.revision = state.revision.wrapping_add(1);
         state.views.clear();
+        self.ready.notify_all();
         drop(state);
         self.counts.clear();
     }
@@ -84,36 +87,70 @@ impl QueryCache {
     ) -> Result<Arc<View>> {
         let slot = {
             let mut state = self.state.lock().unwrap();
-            if state.revision != revision {
-                return Err(ClassificationChanged.into());
-            }
-            state.views.retain(|slot| {
-                slot.value
-                    .get()
-                    .is_none_or(|value| value.as_ref().is_ok_and(|view| view.valid(started)))
-            });
-            let slot = state
-                .views
-                .iter()
-                .position(|slot| slot.key == key)
-                .and_then(|position| state.views.remove(position))
-                .unwrap_or_else(|| {
-                    Arc::new(Slot {
-                        key,
-                        value: OnceLock::new(),
-                    })
+            let slot = loop {
+                if state.revision != revision {
+                    return Err(ClassificationChanged.into());
+                }
+                state.views.retain(|slot| {
+                    slot.value
+                        .get()
+                        .is_none_or(|value| value.as_ref().is_ok_and(|view| view.valid(started)))
                 });
+                if let Some(slot) = state
+                    .views
+                    .iter()
+                    .position(|slot| slot.key == key)
+                    .and_then(|position| state.views.remove(position))
+                {
+                    break slot;
+                }
+                if state.active < 2 {
+                    state.active += 1;
+                    break Arc::new(Slot {
+                        key: key.clone(),
+                        value: OnceLock::new(),
+                    });
+                }
+                state = self.ready.wait(state).unwrap();
+            };
             state.views.push_front(Arc::clone(&slot));
-            state.views.truncate(4);
             slot
         };
-        // Only callers for the same view wait here; no global cache or mutation lock is held.
+        let mut built = false;
         let value = slot.value.get_or_init(|| {
+            built = true;
             #[cfg(test)]
             self.builds
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            build().map(Arc::new).map_err(|error| error.to_string())
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(build))
+                .map_err(|_| anyhow::anyhow!("查询索引构建异常，请重试"))
+                .and_then(|result| result)
+                .map(Arc::new)
+                .map_err(|error| error.to_string())
         });
+        {
+            let mut state = self.state.lock().unwrap();
+            if built {
+                state.active -= 1;
+                if let Some(position) = state
+                    .views
+                    .iter()
+                    .position(|entry| Arc::ptr_eq(entry, &slot))
+                {
+                    let entry = state.views.remove(position).unwrap();
+                    state.views.push_front(entry);
+                }
+                self.ready.notify_all();
+            }
+            let mut completed = 0;
+            state.views.retain(|slot| {
+                if slot.value.get().is_none() {
+                    return true;
+                }
+                completed += 1;
+                completed <= 4
+            });
+        }
         self.check_revision(revision)?;
         value
             .as_ref()
@@ -234,6 +271,59 @@ fn update_expiry(current: &mut Option<i64>, next: Option<i64>) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn admission_survives_invalidation_and_builder_panics() {
+        let cache = QueryCache::default();
+        let (entered, waiting) = std::sync::mpsc::channel();
+        let gate = (Mutex::new(false), Condvar::new());
+        std::thread::scope(|scope| {
+            for key in ["a", "b"] {
+                let (cache, gate, entered) = (&cache, &gate, entered.clone());
+                scope.spawn(move || {
+                    cache.get(key.into(), 10, 0, || {
+                        entered.send(()).unwrap();
+                        let ready = gate.0.lock().unwrap();
+                        let (ready, _) = gate
+                            .1
+                            .wait_timeout_while(ready, std::time::Duration::from_secs(5), |ready| {
+                                !*ready
+                            })
+                            .unwrap();
+                        assert!(*ready);
+                        Ok(view(10, None))
+                    })
+                });
+            }
+            for _ in 0..2 {
+                waiting
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+            }
+            cache.clear();
+            let (cache, entered) = (&cache, entered.clone());
+            let third = scope.spawn(move || {
+                cache.get("c".into(), 10, 1, || {
+                    entered.send(()).unwrap();
+                    Ok(view(10, None))
+                })
+            });
+            assert!(matches!(
+                waiting.recv_timeout(std::time::Duration::from_millis(50)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ));
+            *gate.0.lock().unwrap() = true;
+            gate.1.notify_all();
+            assert!(third.join().unwrap().is_ok());
+        });
+        assert!(cache
+            .get("panic".into(), 10, 1, || panic!("builder failed"))
+            .is_err());
+        assert_eq!(cache.state.lock().unwrap().active, 0);
+        assert!(cache
+            .get("retry".into(), 10, 1, || Ok(view(10, None)))
+            .is_ok());
+    }
+
     fn view(started: i64, valid_until: Option<i64>) -> View {
         View {
             entries: Vec::new().into_boxed_slice(),
@@ -329,5 +419,39 @@ mod tests {
             assert!(Arc::ptr_eq(&first.join().unwrap(), &second.join().unwrap()));
         });
         assert_eq!(cache.build_count(), 1);
+    }
+    #[test]
+    fn pending_build_survives_completed_lru_churn() {
+        let cache = QueryCache::default();
+        let (entered, waiting) = std::sync::mpsc::channel();
+        let (release, resume) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let cache = &cache;
+            let first = scope.spawn(move || {
+                cache
+                    .get("slow".into(), 10, 0, || {
+                        entered.send(()).unwrap();
+                        resume
+                            .recv_timeout(std::time::Duration::from_secs(5))
+                            .unwrap();
+                        Ok(view(10, None))
+                    })
+                    .unwrap()
+            });
+            waiting
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            for key in ["b", "c", "d", "e", "f", "g"] {
+                cache.get(key.into(), 10, 0, || Ok(view(10, None))).unwrap();
+            }
+            let second = scope.spawn(|| {
+                cache
+                    .get("slow".into(), 10, 0, || panic!("duplicate build"))
+                    .unwrap()
+            });
+            release.send(()).unwrap();
+            assert!(Arc::ptr_eq(&first.join().unwrap(), &second.join().unwrap()));
+        });
+        assert_eq!(cache.build_count(), 7);
     }
 }

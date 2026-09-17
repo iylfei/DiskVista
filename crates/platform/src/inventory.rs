@@ -1,7 +1,22 @@
 use crate::normalize;
 use cleaner_domain::InstalledApp;
-use std::{collections::BTreeMap, path::Path};
+use std::{collections::BTreeMap, io::Read, path::Path};
 use winreg::{enums::*, RegKey};
+
+fn read_manifest(path: &Path) -> std::io::Result<String> {
+    const LIMIT: u64 = 2_000_000;
+    let mut text = String::new();
+    std::fs::File::open(path)?
+        .take(LIMIT + 1)
+        .read_to_string(&mut text)?;
+    if text.len() as u64 > LIMIT {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "应用清单超过大小限制",
+        ));
+    }
+    Ok(text)
+}
 
 pub fn installed_apps() -> Vec<InstalledApp> {
     let mut apps = BTreeMap::new();
@@ -212,7 +227,7 @@ fn add_epic(apps: &mut BTreeMap<String, InstalledApp>) {
         if f.metadata().map(|m| m.len() > 2_000_000).unwrap_or(true) {
             continue;
         }
-        let Some(value) = std::fs::read_to_string(f.path())
+        let Some(value) = read_manifest(&f.path())
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         else {
@@ -323,8 +338,7 @@ fn add_steam(apps: &mut BTreeMap<String, InstalledApp>) {
         return;
     };
     let mut roots = vec![root.clone()];
-    if let Ok(text) = std::fs::read_to_string(Path::new(&root).join("steamapps/libraryfolders.vdf"))
-    {
+    if let Ok(text) = read_manifest(&Path::new(&root).join("steamapps/libraryfolders.vdf")) {
         roots.extend(quoted_values(&text, "path"));
     }
     roots.sort();
@@ -340,7 +354,7 @@ fn add_steam(apps: &mut BTreeMap<String, InstalledApp>) {
             if f.metadata().map(|m| m.len() > 2_000_000).unwrap_or(true) {
                 continue;
             }
-            let Ok(text) = std::fs::read_to_string(f.path()) else {
+            let Ok(text) = read_manifest(&f.path()) else {
                 continue;
             };
             let Some(name) = quoted_values(&text, "name").first().cloned() else {
@@ -447,6 +461,18 @@ pub fn last_access_policy() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manifest_read_enforces_byte_limit_and_utf8() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("libraryfolders.vdf");
+        std::fs::write(&path, vec![b' '; 2_000_000]).unwrap();
+        assert_eq!(read_manifest(&path).unwrap().len(), 2_000_000);
+        std::fs::write(&path, vec![b' '; 2_000_001]).unwrap();
+        assert!(read_manifest(&path).is_err());
+        std::fs::write(&path, [0xff]).unwrap();
+        assert!(read_manifest(&path).is_err());
+    }
 
     #[test]
     fn display_icon_parsing_preserves_quoted_commas_and_expands_environment_paths() {

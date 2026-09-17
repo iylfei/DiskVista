@@ -8,6 +8,7 @@ use std::{
     time::Duration,
 };
 mod aggregation;
+mod analysis_candidates;
 mod analysis_usage;
 mod count_cache;
 pub use count_cache::{CountCache, CountCacheStats};
@@ -61,6 +62,7 @@ impl Store {
           CREATE INDEX IF NOT EXISTS entries_parent_size ON entries(scan_id,parent_key,logical DESC,id);
           CREATE INDEX IF NOT EXISTS entries_executable_parents ON entries(scan_id,parent_key) WHERE is_dir=0 AND path_key LIKE '%.exe';
           CREATE INDEX IF NOT EXISTS entries_pending ON entries(scan_id,is_dir,enumerated);
+          CREATE INDEX IF NOT EXISTS entries_directory_paths ON entries(scan_id,path_key) WHERE is_dir=1;
           CREATE INDEX IF NOT EXISTS entries_size ON entries(scan_id,logical DESC);
           CREATE INDEX IF NOT EXISTS entries_identity ON entries(scan_id,identity);
           CREATE INDEX IF NOT EXISTS entries_cursor ON entries(scan_id,id);
@@ -382,26 +384,6 @@ impl Store {
         result
     }
 
-    pub fn analysis_candidate_pool(
-        &self,
-        scan: &str,
-        minimum_bytes: u64,
-    ) -> Result<Vec<FileRecord>> {
-        let root = self.require_finished(scan)?.root;
-        let c = self.connection()?;
-        let mut statement = c.prepare(&format!("SELECT {FIELDS} FROM entries WHERE scan_id=?1 AND is_dir=0 AND logical>?2 AND complete=1 AND blocked=0 AND path_key<>?3 ORDER BY logical DESC,id"))?;
-        let result = statement
-            .query_map(
-                params![
-                    scan,
-                    minimum_bytes.min(i64::MAX as u64) as i64,
-                    normalize(&root)
-                ],
-                decode,
-            )?
-            .collect::<rusqlite::Result<_>>()?;
-        Ok(result)
-    }
     pub fn save_analysis(&self, a: &AnalysisResult) -> Result<()> {
         self.save_analyses(std::slice::from_ref(a))
     }

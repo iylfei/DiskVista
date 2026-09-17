@@ -38,6 +38,9 @@ impl std::ops::Deref for Fixture {
     }
 }
 fn index(entries: Vec<FileRecord>) -> Fixture {
+    index_with_budget(entries, 8 * 1024 * 1024)
+}
+fn index_with_budget(entries: Vec<FileRecord>, budget: usize) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path().join("index.db")).unwrap();
     store
@@ -51,11 +54,12 @@ fn index(entries: Vec<FileRecord>) -> Fixture {
         })
         .unwrap();
     Store::insert_batch(&mut store.connection().unwrap(), "s", &entries).unwrap();
-    let index = SuggestionIndex::from_records(
+    let index = SuggestionIndex::from_records_with_budget(
         &store,
         "s",
         HashMap::from([("cache".into(), "应用缓存".into())]),
         entries.into_iter().map(Ok),
+        budget,
     )
     .unwrap();
     Fixture { index, _dir: dir }
@@ -64,6 +68,112 @@ fn query() -> SuggestionQuery {
     SuggestionQuery {
         limit: 100,
         ..Default::default()
+    }
+}
+
+#[test]
+fn spilled_index_matches_memory_for_filters_pages_and_recycled_paths() {
+    let mut records = vec![
+        file(1, r"D:\Cache", 500, true, Some("cache"), "review"),
+        file(2, r"D:\Cache\old", 200, false, Some("cache"), "low"),
+        file(3, r"D:\Cache\nested", 300, true, Some("other"), "low"),
+        file(
+            4,
+            r"D:\Cache\nested\keep",
+            100,
+            false,
+            Some("cache"),
+            "protected",
+        ),
+        file(5, r"D:\Cache-copy", 100, true, Some("cache"), "low"),
+        file(
+            6,
+            r"\\?\UNC\server\share\gone\file",
+            100,
+            false,
+            Some("cache"),
+            "low",
+        ),
+    ];
+    records.extend((7..=550).map(|id| {
+        let mut f = file(
+            id,
+            &format!(r"D:\other\{id:04}"),
+            id as u64,
+            false,
+            if id % 3 == 0 { None } else { Some("cache") },
+            if id % 7 == 0 { "protected" } else { "low" },
+        );
+        f.latest_change = id % 13;
+        f
+    }));
+    let memory = index(records.clone());
+    let disk = SuggestionIndex::from_records_with_budget(
+        &memory.store,
+        "s",
+        HashMap::from([("cache".into(), "应用缓存".into())]),
+        records.into_iter().map(Ok),
+        1,
+    )
+    .unwrap();
+    assert!(disk.disk.is_some());
+    assert!(disk.entries.is_empty() && disk.assessments.is_empty());
+    for recycled in [false, true] {
+        if recycled {
+            for (id, path, is_dir) in [
+                ("child", r"D:\Cache\old", false),
+                ("unc", r"\\server\share\gone", true),
+            ] {
+                memory
+                    .store
+                    .add_history_for_scan(&history_item(id, path, "recycled", is_dir), "s")
+                    .unwrap();
+            }
+        }
+        for risk in ["", "low", "known", "unknown", "protected"] {
+            for sort in ["size", "name", "activity_asc", "activity_desc"] {
+                for status in ["", "analyzed", "unanalyzed"] {
+                    let filter =
+                        AnalysisFilter::new(status, [2, 4, 7, 9, 12, 15].into_iter().collect())
+                            .unwrap();
+                    for offset in [0, 20] {
+                        let q = SuggestionQuery {
+                            risk: risk.into(),
+                            sort: sort.into(),
+                            analysis_status: status.into(),
+                            offset,
+                            limit: 20,
+                            ..query()
+                        };
+                        let expected = page_with_analysis(&memory, &q, filter.as_ref()).unwrap();
+                        let actual = page_with_analysis(&disk, &q, filter.as_ref()).unwrap();
+                        assert_eq!(
+                            actual.total, expected.total,
+                            "risk={risk} sort={sort} status={status} recycled={recycled}"
+                        );
+                        assert_eq!(
+                            serde_json::to_value(actual.groups).unwrap(),
+                            serde_json::to_value(expected.groups).unwrap()
+                        );
+                        assert_eq!(
+                            serde_json::to_value(actual.items).unwrap(),
+                            serde_json::to_value(expected.items).unwrap()
+                        );
+                    }
+                }
+            }
+        }
+        for search in ["", "00"] {
+            let q = SuggestionQuery {
+                group: Some("rule:cache".into()),
+                search: search.into(),
+                ..query()
+            };
+            assert_eq!(
+                serde_json::to_value(selection(&disk, &q).unwrap()).unwrap(),
+                serde_json::to_value(selection(&memory, &q).unwrap()).unwrap()
+            );
+        }
     }
 }
 
@@ -843,72 +953,75 @@ fn partial_directory_cleanup_exposes_survivors_and_refreshes_cached_group_totals
 
 #[test]
 fn recycled_filter_precedes_paging_and_the_group_selection_limit() {
-    let data = index(
-        (1..=607)
-            .map(|id| {
-                file(
-                    id,
-                    &format!(r"D:\Files\{id}.bin"),
-                    200_000_000 + id as u64,
-                    false,
-                    Some("cache"),
-                    "low",
-                )
-            })
-            .collect(),
-    );
-    let mut q = SuggestionQuery {
-        group: Some("rule:cache".into()),
-        limit: 2,
-        ..query()
-    };
-    assert_eq!(page(&data, &q).unwrap().total, 607);
-    assert!(selection(&data, &q).is_err());
-    let mut connection = data.store.connection().unwrap();
-    let transaction = connection.transaction().unwrap();
-    for id in 1..=607 {
-        let item = history_item(
-            &format!("h-{id}"),
-            &format!(r"D:\Files\{id}.bin"),
-            if id <= 601 {
-                "recycled"
-            } else if id == 607 {
-                "failed"
-            } else {
-                "skipped"
-            },
-            false,
+    for budget in [usize::MAX, 1] {
+        let data = index_with_budget(
+            (1..=607)
+                .map(|id| {
+                    file(
+                        id,
+                        &format!(r"D:\Files\{id}.bin"),
+                        200_000_000 + id as u64,
+                        false,
+                        Some("cache"),
+                        "low",
+                    )
+                })
+                .collect(),
+            budget,
         );
-        transaction
-            .execute(
-                "INSERT INTO history VALUES(?1,?2,?3)",
-                rusqlite::params![item.id, item.time, serde_json::to_string(&item).unwrap()],
-            )
-            .unwrap();
+        let mut q = SuggestionQuery {
+            group: Some("rule:cache".into()),
+            limit: 2,
+            ..query()
+        };
+        assert_eq!(page(&data, &q).unwrap().total, 607);
+        assert!(selection(&data, &q).is_err());
+        let mut connection = data.store.connection().unwrap();
+        let transaction = connection.transaction().unwrap();
+        for id in 1..=607 {
+            let item = history_item(
+                &format!("h-{id}"),
+                &format!(r"D:\Files\{id}.bin"),
+                if id <= 601 {
+                    "recycled"
+                } else if id == 607 {
+                    "failed"
+                } else {
+                    "skipped"
+                },
+                false,
+            );
+            transaction
+                .execute(
+                    "INSERT INTO history VALUES(?1,?2,?3)",
+                    rusqlite::params![item.id, item.time, serde_json::to_string(&item).unwrap()],
+                )
+                .unwrap();
+        }
+        transaction.commit().unwrap();
+        let first = page(&data, &q).unwrap();
+        assert_eq!(first.total, 6);
+        assert_eq!(first.groups[0].count, 6);
+        assert_eq!(
+            first.groups[0].occupied_bytes,
+            (602..=607).map(|id| 200_000_000 + id).sum::<u64>()
+        );
+        assert_eq!(
+            first.items.iter().map(|file| file.id).collect::<Vec<_>>(),
+            vec![607, 606]
+        );
+        q.offset = 2;
+        assert_eq!(
+            page(&data, &q)
+                .unwrap()
+                .items
+                .iter()
+                .map(|file| file.id)
+                .collect::<Vec<_>>(),
+            vec![605, 604]
+        );
+        assert_eq!(selection(&data, &q).unwrap().len(), 6);
     }
-    transaction.commit().unwrap();
-    let first = page(&data, &q).unwrap();
-    assert_eq!(first.total, 6);
-    assert_eq!(first.groups[0].count, 6);
-    assert_eq!(
-        first.groups[0].occupied_bytes,
-        (602..=607).map(|id| 200_000_000 + id).sum::<u64>()
-    );
-    assert_eq!(
-        first.items.iter().map(|file| file.id).collect::<Vec<_>>(),
-        vec![607, 606]
-    );
-    q.offset = 2;
-    assert_eq!(
-        page(&data, &q)
-            .unwrap()
-            .items
-            .iter()
-            .map(|file| file.id)
-            .collect::<Vec<_>>(),
-        vec![605, 604]
-    );
-    assert_eq!(selection(&data, &q).unwrap().len(), 6);
 }
 
 #[test]

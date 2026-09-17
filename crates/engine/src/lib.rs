@@ -1,4 +1,5 @@
 pub mod analysis_filter;
+pub mod analysis_queue;
 pub mod annotations;
 pub mod application_index;
 pub mod application_origins;

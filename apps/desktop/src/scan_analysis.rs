@@ -8,11 +8,11 @@ use cleaner_engine::{
     recycled_targets::RecycledTargets, rules::RuleSet, safety::SafetyPolicy,
 };
 use cleaner_llm::client::{self, Budget};
-use std::{
-    collections::{HashSet, VecDeque},
-    sync::{atomic::Ordering, Mutex},
-};
+#[cfg(test)]
+use std::collections::{HashSet, VecDeque};
+use std::sync::{atomic::Ordering, Mutex};
 use tauri::State;
+mod candidates;
 pub(crate) mod grouping;
 
 const MINIMUM_BATCH_BYTES: u64 = 100 * 1024 * 1024;
@@ -84,76 +84,67 @@ fn start(state: Shared, scan_id: &str, trigger: Trigger) -> Result<AnalysisProgr
     let budget = ai::budget(&state, scan_id, settings.llm.max_requests);
     budget.cancel.store(false, Ordering::SeqCst);
     drop(setup_guard);
-    let mut candidates = collect_candidates(&state, &scan, &settings)?;
-    let queued = candidates.len() as u32;
-    let ids: Vec<_> = candidates.iter().map(|file| file.id).collect();
-    let reusable = crate::analysis_results::reusable_ids(&state, scan_id, &ids)?;
-    candidates.retain(|file| !reusable.contains(&file.id));
-    let cached = queued - candidates.len() as u32;
-    if !candidates.is_empty() && budget.requests.load(Ordering::Relaxed) >= budget.maximum {
-        return Err("本次扫描的 AI 请求上限已用完，可在设置中调整上限后继续。".into());
-    }
     let progress = AnalysisProgress {
         scan_id: Some(scan_id.into()),
-        active: !candidates.is_empty(),
-        queued,
-        finished: cached,
+        active: true,
+        queued: 0,
+        finished: 0,
         requests: budget.requests.load(Ordering::Relaxed),
         max_requests: budget.maximum,
-        message: if candidates.is_empty() && cached > 0 {
-            format!("已复用 {cached} 项有效分析，没有需要重复请求的文件。")
-        } else if candidates.is_empty() {
-            "没有来源不明确且超过当前大小门槛的待分析文件。".into()
-        } else {
-            "正在按目录组织批量分析…".into()
-        },
+        message: "正在整理待分析文件…".into(),
     };
     *state.progress.lock().unwrap() = progress.clone();
-    if candidates.is_empty() {
-        return Ok(progress);
-    }
     let scan_id = scan_id.to_owned();
     std::thread::Builder::new()
         .name("scan-ai-analysis".into())
         .spawn(move || {
             let _lease = lease;
-            run_batch(
-                &state,
-                &scan_id,
-                &settings.llm,
-                trigger,
-                budget,
-                candidates,
-                cached,
-            );
+            match candidates::collect(&state, &scan, &settings, &budget) {
+                Ok(prepared) => {
+                    {
+                        let mut progress = state.progress.lock().unwrap();
+                        progress.queued = prepared.queued;
+                        progress.finished = prepared.cached;
+                    }
+                    run_batch(
+                        &state,
+                        &scan_id,
+                        &settings.llm,
+                        trigger,
+                        budget,
+                        prepared.queue,
+                        prepared.cached,
+                    );
+                }
+                Err(message) => state.progress.lock().unwrap().message = message,
+            }
         })
         .map_err(|_| "无法启动 AI 分析任务，请稍后重试".to_owned())?;
     Ok(progress)
 }
 
+#[cfg(test)]
 fn collect_candidates(
     state: &Shared,
     scan: &Scan,
     settings: &Settings,
 ) -> Result<VecDeque<FileRecord>, String> {
-    let scan_id = scan.id.as_str();
-    let minimum_bytes = settings.llm.minimum_bytes.max(MINIMUM_BATCH_BYTES);
-    let mut candidates = state
-        .store
-        .analysis_candidate_pool(scan_id, minimum_bytes)
-        .map_err(error)?;
-    let recycled = RecycledTargets::load(&state.store, scan).map_err(error)?;
-    candidates.retain(|file| !recycled.contains(&file.path));
-    let policy = SafetyPolicy::new(settings.clone());
-    let (_, apps) = state.application_index(scan_id, &policy)?;
-    let rules = RuleSet::load(settings.community_enabled).map_err(error)?;
-    let classifier = Classifier::new(scan, &rules, &policy, &apps);
-    for file in &mut candidates {
-        classifier.apply(file);
+    let mut prepared = candidates::collect(
+        state,
+        scan,
+        settings,
+        &Budget::new(settings.llm.max_requests),
+    )?;
+    let mut files = Vec::new();
+    while !prepared.queue.is_empty() {
+        for id in prepared.queue.take(20).map_err(error)? {
+            files.push(state.classified_entry(&scan.id, id)?);
+        }
     }
-    Ok(select_candidates(candidates, &policy, &apps, minimum_bytes))
+    Ok(files.into())
 }
 
+#[cfg(test)]
 fn select_candidates(
     files: Vec<FileRecord>,
     policy: &SafetyPolicy,
@@ -208,10 +199,10 @@ fn run_batch(
     settings: &LlmSettings,
     trigger: Trigger,
     budget: Budget,
-    candidates: VecDeque<FileRecord>,
+    candidates: cleaner_engine::analysis_queue::CandidateQueue,
     cached: u32,
 ) {
-    let queue = Mutex::new(grouping::CandidateQueue::new(candidates));
+    let queue = Mutex::new(candidates);
     let outcomes = Mutex::new(Outcomes {
         cached,
         ..Default::default()
@@ -240,10 +231,18 @@ fn run_batch(
                         break;
                     }
                 };
-                let files = grouping::take(
-                    &mut queue.lock().unwrap(),
-                    grouping::item_limit(&current.llm),
-                );
+                let files = match queue
+                    .lock()
+                    .unwrap()
+                    .take(grouping::item_limit(&current.llm))
+                {
+                    Ok(files) => files,
+                    Err(error) => {
+                        outcomes.lock().unwrap().last_error = Some(error.to_string());
+                        budget.cancel.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                };
                 if files.is_empty() {
                     break;
                 }
@@ -258,7 +257,7 @@ fn run_batch(
                     match builder
                         .as_ref()
                         .map_err(Clone::clone)
-                        .and_then(|builder| builder.build(file.id).map_err(error))
+                        .and_then(|builder| builder.build(file).map_err(error))
                     {
                         Ok(context) => contexts.push(context),
                         Err(message) => {
@@ -364,6 +363,40 @@ mod tests {
     }
 
     #[test]
+    fn preparation_pages_all_candidates_and_honors_cancellation_without_ai_requests() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().join("paged.sqlite")).unwrap();
+        let scan = Scan {
+            id: "s".into(),
+            root: r"D:\CandidateFixture".into(),
+            status: "complete".into(),
+            ..Default::default()
+        };
+        store.save_scan(&scan).unwrap();
+        let files: Vec<_> = (1..=451)
+            .map(|id| candidate(0, &format!(r"D:\CandidateFixture\{id}.bin"), false))
+            .collect();
+        Store::insert_batch(&mut store.connection().unwrap(), "s", &files).unwrap();
+        let state = crate::state::AppState::new(store);
+        let settings = Settings::default();
+        let budget = Budget::new(100);
+        budget.cancel.store(true, Ordering::SeqCst);
+        assert!(
+            matches!(candidates::collect(&state, &scan, &settings, &budget), Err(message) if message.contains("取消"))
+        );
+        budget.cancel.store(false, Ordering::SeqCst);
+        let mut prepared = candidates::collect(&state, &scan, &settings, &budget).unwrap();
+        assert_eq!((prepared.queued, prepared.cached), (451, 0));
+        let mut ids = Vec::new();
+        while !prepared.queue.is_empty() {
+            ids.extend(prepared.queue.take(20).unwrap());
+        }
+        assert_eq!(ids, (1..=451).collect::<Vec<_>>());
+        assert_eq!(state.progress.lock().unwrap().queued, 451);
+        assert_eq!(budget.requests.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
     fn candidate_collection_uses_current_rules_and_protection_without_external_ai() {
         let temp = tempfile::tempdir().unwrap();
         let store = Store::open(temp.path().join("candidates.sqlite")).unwrap();
@@ -405,7 +438,15 @@ mod tests {
         let saved = state.store.by_path("s", &candidates[0].path).unwrap();
         assert_eq!(saved.assessment.risk, "protected");
         assert!(saved.assessment.rule_id.is_some());
-        let pool = state.store.analysis_candidate_pool("s", 100).unwrap();
+        let pool = state
+            .store
+            .analysis_candidate_page(
+                "s",
+                100,
+                None,
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .unwrap();
         assert!(pool.iter().any(|file| file.path == candidates[0].path));
         assert_eq!(state.progress.lock().unwrap().requests, 0);
     }
@@ -474,7 +515,16 @@ mod tests {
             vec!["failed.bin", "skipped.bin", "restored.bin"]
         );
         assert_eq!(
-            state.store.analysis_candidate_pool("s", 100).unwrap().len(),
+            state
+                .store
+                .analysis_candidate_page(
+                    "s",
+                    100,
+                    None,
+                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))
+                )
+                .unwrap()
+                .len(),
             5
         );
         assert_eq!(state.progress.lock().unwrap().requests, 0);
@@ -617,6 +667,12 @@ mod tests {
         thread.join().unwrap();
         assert_eq!(progress.max_requests, 1);
         assert_eq!(progress.requests, 0);
-        assert!(!progress.active);
+        assert!(progress.active);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while state.analysis_busy.load(Ordering::SeqCst) {
+            assert!(std::time::Instant::now() < until);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!state.progress.lock().unwrap().active);
     }
 }

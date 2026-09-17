@@ -1,3 +1,4 @@
+mod disk;
 mod query;
 mod seeds;
 
@@ -32,6 +33,7 @@ struct Candidate {
 }
 
 pub struct SuggestionIndex {
+    disk: Option<disk::DiskIndex>,
     store: Store,
     scan_id: String,
     entries: Vec<Candidate>,
@@ -49,7 +51,18 @@ impl SuggestionIndex {
         names: HashMap<String, String>,
         records: impl Iterator<Item = Result<FileRecord>>,
     ) -> Result<Self> {
+        Self::from_records_with_budget(store, scan, names, records, 8 * 1024 * 1024)
+    }
+
+    fn from_records_with_budget(
+        store: &Store,
+        scan: &str,
+        names: HashMap<String, String>,
+        records: impl Iterator<Item = Result<FileRecord>>,
+        budget: usize,
+    ) -> Result<Self> {
         let mut index = Self {
+            disk: None,
             store: store.clone(),
             scan_id: scan.into(),
             entries: vec![],
@@ -61,14 +74,10 @@ impl SuggestionIndex {
         };
         let mut assessments = HashMap::new();
         let mut groups = HashMap::new();
+        let mut retained_bytes = 0usize;
         for record in records {
             let file = record?;
             let a = file.assessment;
-            let assessment_key = serde_json::to_string(&a)?;
-            let assessment = *assessments.entry(assessment_key).or_insert_with(|| {
-                index.assessments.push(a.clone());
-                index.assessments.len() - 1
-            });
             let group_id = a
                 .rule_id
                 .as_ref()
@@ -101,7 +110,7 @@ impl SuggestionIndex {
                 });
                 index.groups.len() - 1
             });
-            index.entries.push(Candidate {
+            let mut candidate = Candidate {
                 id: file.id,
                 key: normalize(&file.path),
                 path: file.path,
@@ -109,9 +118,44 @@ impl SuggestionIndex {
                 occupied: file.allocated_bytes.unwrap_or(file.logical_bytes),
                 estimated: file.allocated_bytes.is_none(),
                 latest_change: file.latest_change,
-                assessment,
+                assessment: 0,
                 group,
-            });
+            };
+            if let Some(disk) = &mut index.disk {
+                disk.insert(&candidate, &a)?;
+                continue;
+            }
+            let assessment_key = serde_json::to_string(&a)?;
+            candidate.assessment =
+                *assessments
+                    .entry(assessment_key.clone())
+                    .or_insert_with(|| {
+                        // JSON plus decoded strings and both vector/hash-map overheads.
+                        retained_bytes = retained_bytes.saturating_add(
+                            assessment_key.len() * 3 + std::mem::size_of::<Assessment>() * 2,
+                        );
+                        index.assessments.push(a);
+                        index.assessments.len() - 1
+                    });
+            retained_bytes = retained_bytes.saturating_add(
+                candidate.path.capacity()
+                    + candidate.key.capacity()
+                    + std::mem::size_of::<Candidate>() * 2,
+            );
+            index.entries.push(candidate);
+            if retained_bytes >= budget {
+                let mut disk = disk::DiskIndex::new()?;
+                for candidate in &index.entries {
+                    disk.insert(candidate, &index.assessments[candidate.assessment])?;
+                }
+                index.disk = Some(disk);
+                index.entries = Vec::new();
+                index.assessments = Vec::new();
+                assessments = HashMap::new();
+            }
+        }
+        if let Some(disk) = &mut index.disk {
+            disk.finish()?;
         }
         Ok(index)
     }
