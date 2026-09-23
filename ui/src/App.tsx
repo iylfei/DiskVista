@@ -463,6 +463,8 @@ export default function App() {
           {navigation.map(([id, label, Icon]) => (
             <button
               key={id}
+              title={label}
+              aria-label={label}
               disabled={cleaning}
               className={page === id ? "active" : ""}
               onClick={() => {

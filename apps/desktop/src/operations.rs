@@ -92,16 +92,23 @@ pub fn cancel_cleanup(state: State<'_, Shared>) {
 }
 #[tauri::command]
 pub async fn history_page(
+    recycled_only: Option<bool>,
     state: State<'_, Shared>,
     offset: Option<u64>,
     limit: Option<u32>,
 ) -> Result<HistoryPage, String> {
     let state = state.inner().clone();
     crate::background::read(move || {
-        state
-            .store
-            .history_page(offset.unwrap_or(0), limit.unwrap_or(20))
-            .map_err(error)
+        let page = if recycled_only.unwrap_or(false) {
+            state
+                .store
+                .recycled_history_page(offset.unwrap_or(0), limit.unwrap_or(20))
+        } else {
+            state
+                .store
+                .history_page(offset.unwrap_or(0), limit.unwrap_or(20))
+        };
+        page.map_err(error)
     })
     .await
 }

@@ -1,4 +1,49 @@
 const exactEnglish: Record<string, string> = {
+  设置已保存: "Settings saved",
+  设置分类: "Settings categories",
+  常规: "General",
+  分析设置: "Analysis settings",
+  "AI 配置": "AI configuration",
+  保护设置: "Protection settings",
+  "AI 服务": "AI services",
+  语言模型: "Language model",
+  语言模型分析: "Language model analysis",
+  启用语言模型: "Enable language model",
+  保存常规设置: "Save general settings",
+  保存分析设置: "Save analysis settings",
+  保存语言模型配置: "Save language model settings",
+  保存历史回收参考: "Save history references",
+  "正在保存…": "Saving…",
+  重新分析: "Reanalyze",
+  重新分析当前扫描: "Reanalyze current scan",
+  开始重新分析: "Start reanalysis",
+  "按当前配置重新请求 AI，不复用上次结果":
+    "Request fresh AI analysis using current settings without reusing prior results",
+  "将按当前配置重新分析符合条件的文件，不复用旧结果。旧结果保留为过期记录，本轮重新计算语言模型的请求预算，可能产生新的 API 费用。":
+    "Eligible files will be analyzed again using current settings. Old results remain expired, and the language model receives a new request budget, which may incur API charges.",
+  "已请求重新分析，此结果仅供历史参考":
+    "Reanalysis requested; this result is kept for historical reference only",
+  "是否发送回收历史由语言模型配置中的授权开关控制。":
+    "Sending recycling history is controlled by the consent setting for the language model.",
+  "默认：近 180 天内与当前文件有明确匹配线索的成功回收记录，最多 6 条":
+    "Default: up to six successful recycling records from the last 180 days with a clear match to the current file",
+  "手动选择记录（最多 100 条）": "Select records manually (up to 100)",
+  "手动选择时，选中的记录即使较旧或没有匹配线索也可作为参考。只使用本软件确认成功回收的记录；受保护、敏感或禁止发送的路径仍会排除。历史不能证明当前文件可删除，也无法确认是否已还原。超出上下文容量时只发送部分参考。":
+    "Manually selected records may be older or have no clear match. Only records this app confirmed as recycled are used; protected, sensitive, and excluded paths are omitted. History does not prove the current file can be deleted or whether a prior file was restored. Some references may be omitted to fit the context limit.",
+  "已选择 {1} 条；不勾选则不发送历史。":
+    "{1} records selected; selecting none sends no history.",
+  暂无成功回收记录: "No successful recycling records",
+  刷新记录: "Refresh records",
+  "默认仅参考近 180 天内与当前文件有明确匹配线索的成功回收记录，最多 6 条；也可在“历史回收参考”手动选择。发送脱敏路径、大小、时间和已有应用归属。历史仅供参考，不证明当前文件可以删除。更改服务地址后需要重新授权。":
+    "By default, up to six successful records from the last 180 days with a clear match are used. You can also select records manually. Redacted paths, sizes, timestamps, and known app ownership are sent. History does not prove a file can be deleted. Changing providers requires renewed consent.",
+  "手动选择的回收历史，未发现与当前文件明确匹配的线索":
+    "Manually selected recycling history; no clear match to the current file was found",
+  "历史回收参考最多选择 100 条，记录编号不能重复或为空":
+    "Select up to 100 history records with unique, nonempty IDs",
+  "默认仅参考近 180 天内与当前文件有明确匹配线索的成功回收记录，最多 6 条。手动选择可包含更早或没有匹配线索的记录，但仍需授权，且受保护的路径不会发送。历史不会扩大批量候选范围、降低保护或证明文件可删。":
+    "By default, up to six successful records from the last 180 days with a clear match are used. Manual selection can include older or unmatched records, but consent is still required and protected paths are not sent. History does not expand candidate selection, relax protections, or prove a file can be deleted.",
+  "只分析超过门槛的文件，不包含目录或已明确所属应用的文件。":
+    "Only files above the size threshold are analyzed, excluding folders and files with a known application owner.",
   "正在删除扫描记录…": "Deleting scan record…",
   已有扫描记录正在后台删除:
     "A scan record is already being deleted in the background",

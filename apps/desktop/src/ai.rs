@@ -61,6 +61,7 @@ fn policy_config_hash(settings: &Settings, client_config: String) -> String {
                 &settings.ignored_paths,
                 &settings.excluded_llm_paths,
                 &settings.labels,
+                &settings.history_reference_ids,
             ))
             .expect("serializable analysis policy")
         )
@@ -234,8 +235,9 @@ fn run_one_with(
             result.assessment = Some(reply.assessment);
             result.prompt_tokens = reply.prompt_tokens;
             result.completion_tokens = reply.completion_tokens;
-            if !snapshot_context(state, &context.scan_id, context.entry_id)
-                .is_ok_and(|fresh| fresh.fingerprint == context.fingerprint)
+            if b.cancel.load(Ordering::Relaxed)
+                || !snapshot_context(state, &context.scan_id, context.entry_id)
+                    .is_ok_and(|fresh| fresh.fingerprint == context.fingerprint)
                 || context::validate_samples(&state.store, &context, &samples).is_err()
                 || !state.store.settings().is_ok_and(|current| {
                     RuleSet::load(current.community_enabled).is_ok_and(|rules| {

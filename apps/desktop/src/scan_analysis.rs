@@ -55,9 +55,13 @@ impl Drop for AnalysisLease {
 pub async fn analyze_scan(
     state: State<'_, Shared>,
     scan_id: String,
+    fresh: Option<bool>,
 ) -> Result<AnalysisProgress, String> {
     let state = state.inner().clone();
-    crate::background::read(move || start(state, &scan_id, Trigger::Manual)).await
+    crate::background::read(move || {
+        start_with_fresh(state, &scan_id, Trigger::Manual, fresh.unwrap_or(false))
+    })
+    .await
 }
 
 pub fn auto_analyze(state: Shared, scan_id: &str) {
@@ -70,6 +74,15 @@ pub fn auto_analyze(state: Shared, scan_id: &str) {
 }
 
 fn start(state: Shared, scan_id: &str, trigger: Trigger) -> Result<AnalysisProgress, String> {
+    start_with_fresh(state, scan_id, trigger, false)
+}
+
+fn start_with_fresh(
+    state: Shared,
+    scan_id: &str,
+    trigger: Trigger,
+    fresh: bool,
+) -> Result<AnalysisProgress, String> {
     let setup_guard = state.mutations.lock().unwrap();
     let settings = state.store.settings().map_err(error)?;
     let scan = state.store.scan(scan_id).map_err(error)?;
@@ -81,6 +94,9 @@ fn start(state: Shared, scan_id: &str, trigger: Trigger) -> Result<AnalysisProgr
         return Err("已有 AI 分析任务运行，请等待或取消".into());
     }
     let lease = AnalysisLease(state.clone());
+    if fresh {
+        crate::reanalysis::prepare(&state, scan_id)?;
+    }
     let budget = ai::budget(&state, scan_id, settings.llm.max_requests);
     budget.cancel.store(false, Ordering::SeqCst);
     drop(setup_guard);

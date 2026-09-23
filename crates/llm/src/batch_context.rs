@@ -88,7 +88,7 @@ fn metadata(contexts: &[AnalysisContext]) -> Result<BatchMetadata<'_>> {
         let directory_id = intern(&mut directories, directory);
         let note_id = intern(&mut notes, &context.note);
         let mut allowed_history = HashSet::new();
-        if context.history_references.len() > 6 {
+        if context.history_references.len() > 100 {
             bail!("单个文件的回收历史参考超过限制");
         }
         for reference in &context.history_references {

@@ -23,6 +23,32 @@ fn history() -> HistoryReference {
 }
 
 #[test]
+fn manually_selected_history_can_exceed_the_default_six_references() {
+    let mut input = context(1, "D:/Example/file.bin");
+    input.history_references = (0..10)
+        .map(|index| HistoryReference {
+            id: format!("history:{index}"),
+            ..history()
+        })
+        .collect();
+    let value: Value = serde_json::from_str(&payload(&[input.clone()], None).unwrap()).unwrap();
+    assert_eq!(
+        value["metadata"]["historyReferences"]
+            .as_array()
+            .unwrap()
+            .len(),
+        10
+    );
+    input.history_references = (0..101)
+        .map(|index| HistoryReference {
+            id: format!("history:{index}"),
+            ..history()
+        })
+        .collect();
+    assert!(validate_batch_contexts(&[input]).is_err());
+}
+
+#[test]
 fn shared_paths_notes_and_history_preserve_each_items_own_authorization_and_basis() {
     let mut first = context(1, "%USERPROFILE%/Example/a.bin");
     first.history_references = vec![history()];

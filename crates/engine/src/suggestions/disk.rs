@@ -287,8 +287,12 @@ mod tests {
             },
             ..Default::default()
         };
-        crate::store::Store::insert_batch(&mut store.connection().unwrap(), "s", &[file.clone()])
-            .unwrap();
+        crate::store::Store::insert_batch(
+            &mut store.connection().unwrap(),
+            "s",
+            std::slice::from_ref(&file),
+        )
+        .unwrap();
         let index = SuggestionIndex::from_records_with_budget(
             &store,
             "s",

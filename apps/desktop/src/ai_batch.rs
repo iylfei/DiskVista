@@ -171,7 +171,8 @@ fn run_with(
         let final_settings = state.store.settings().map_err(error)?;
         let final_recycled = RecycledTargets::load(&state.store, &scan).map_err(error)?;
         let final_rules = RuleSet::load(final_settings.community_enabled).map_err(error)?;
-        let unchanged = authorized(&final_settings.llm, automatic)
+        let unchanged = !budget.cancel.load(Ordering::Relaxed)
+            && authorized(&final_settings.llm, automatic)
             && ai::analysis_config_hash(&final_settings, &final_rules.version) == config;
         let final_policy = SafetyPolicy::new(final_settings);
         let final_builder = state

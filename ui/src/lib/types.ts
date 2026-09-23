@@ -75,6 +75,7 @@ export interface LlmSettings {
   timeoutSeconds: number;
 }
 export interface Settings {
+  historyReferenceIds?: string[] | null;
   language?: "zh-CN" | "en";
   scanRetention: number;
   enhancedScan: boolean;

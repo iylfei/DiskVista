@@ -11,6 +11,7 @@ mod aggregation;
 mod analysis_candidates;
 mod analysis_usage;
 mod count_cache;
+mod reanalysis;
 pub use count_cache::{CountCache, CountCacheStats};
 mod entry_data;
 mod history_paging;
@@ -335,7 +336,7 @@ impl Store {
         c.progress_handler(
             1000,
             Some(move || flag.load(std::sync::atomic::Ordering::Relaxed)),
-        );
+        )?;
         let mut s=c.prepare(&format!("WITH RECURSIVE tree(id,path_key) AS (SELECT id,path_key FROM entries WHERE scan_id=?1 AND path_key=?2 UNION ALL SELECT e.id,e.path_key FROM entries e JOIN tree t ON e.parent_key=t.path_key WHERE e.scan_id=?1) SELECT {FIELDS} FROM entries WHERE id IN (SELECT id FROM tree) ORDER BY path_key LIMIT ?3"))?;
         let rows = s.query_map(
             params![
@@ -395,7 +396,10 @@ impl Store {
         let tx = connection.transaction()?;
         for a in results {
             tx.execute(
-                "INSERT OR REPLACE INTO analyses VALUES(?1,?2,?3,?4,?5)",
+                "INSERT INTO analyses VALUES(?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET data=
+                 CASE WHEN json_extract(analyses.data,'$.trace.superseded')=1
+                 THEN json_set(excluded.data,'$.status','stale','$.trace.superseded',json('true'),'$.message','已请求重新分析，此结果仅供历史参考')
+                 ELSE excluded.data END",
                 params![
                     a.id,
                     a.scan_id,
@@ -410,7 +414,7 @@ impl Store {
     }
     pub fn analyses(&self, scan: &str, id: i64) -> Result<Vec<AnalysisResult>> {
         let c = self.connection()?;
-        let mut s=c.prepare("SELECT data FROM analyses WHERE scan_id=?1 AND entry_id=?2 ORDER BY created DESC LIMIT 10")?;
+        let mut s=c.prepare("SELECT data FROM analyses WHERE scan_id=?1 AND entry_id=?2 AND COALESCE(json_extract(data,'$.trace.source'),'llm')<>'jev' ORDER BY created DESC LIMIT 10")?;
         let result = s
             .query_map(params![scan, id], |r| r.get::<_, String>(0))?
             .map(|v| Ok(serde_json::from_str(&v?)?))
@@ -426,7 +430,7 @@ impl Store {
         let placeholders = std::iter::repeat_n("?", ids.len())
             .collect::<Vec<_>>()
             .join(",");
-        let sql = format!("SELECT data FROM (SELECT entry_id,created,id,data,ROW_NUMBER() OVER(PARTITION BY entry_id ORDER BY created DESC,id DESC) AS rank FROM analyses WHERE scan_id=? AND entry_id IN ({placeholders})) WHERE rank<=10 ORDER BY entry_id,created DESC,id DESC");
+        let sql = format!("SELECT data FROM (SELECT entry_id,created,id,data,ROW_NUMBER() OVER(PARTITION BY entry_id ORDER BY created DESC,id DESC) AS rank FROM analyses WHERE scan_id=? AND entry_id IN ({placeholders}) AND COALESCE(json_extract(data,'$.trace.source'),'llm')<>'jev') WHERE rank<=10 ORDER BY entry_id,created DESC,id DESC");
         let mut args: Vec<rusqlite::types::Value> = vec![scan.to_owned().into()];
         args.extend(ids.iter().copied().map(Into::into));
         let mut statement = c.prepare(&sql)?;
@@ -441,7 +445,7 @@ impl Store {
     pub fn analysis_entry_ids(&self, scan: &str) -> Result<Vec<i64>> {
         let connection = self.connection()?;
         let mut statement = connection
-            .prepare("SELECT DISTINCT entry_id FROM analyses WHERE scan_id=? ORDER BY entry_id")?;
+            .prepare("SELECT DISTINCT entry_id FROM analyses WHERE scan_id=? AND COALESCE(json_extract(data,'$.trace.source'),'llm')<>'jev' ORDER BY entry_id")?;
         let ids = statement
             .query_map([scan], |row| row.get(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;

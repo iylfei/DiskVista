@@ -7,6 +7,7 @@ use std::collections::HashSet;
 pub const HISTORY_DAYS: i64 = 180;
 pub const HISTORY_POOL_LIMIT: usize = 200;
 pub const HISTORY_REFERENCE_LIMIT: usize = 6;
+pub const MANUAL_HISTORY_REFERENCE_LIMIT: usize = 100;
 pub const HISTORY_JSON_LIMIT: usize = 8 * 1024;
 
 struct HistoricalEntry {
@@ -18,6 +19,7 @@ struct HistoricalEntry {
 pub struct HistoryPool {
     entries: Vec<HistoricalEntry>,
     valid_until: Option<i64>,
+    manual: bool,
 }
 
 impl HistoryPool {
@@ -26,9 +28,24 @@ impl HistoryPool {
             return Ok(Self::default());
         }
         let now = chrono::Utc::now().timestamp();
-        let rows =
-            store.recent_recycled_history(now - HISTORY_DAYS * 86_400, now, HISTORY_POOL_LIMIT)?;
-        let mut pool = Self::from_items(rows, policy, apps, now);
+        let manual = policy.settings.history_reference_ids.is_some();
+        let rows = if let Some(ids) = &policy.settings.history_reference_ids {
+            let connection = store.connection()?;
+            let mut query = connection.prepare("SELECT data FROM history WHERE id=?1 AND time<=?2 AND json_extract(data,'$.status')='recycled'")?;
+            let mut rows = Vec::new();
+            for id in ids.iter().take(MANUAL_HISTORY_REFERENCE_LIMIT) {
+                let mut found = query.query(rusqlite::params![id, now])?;
+                if let Some(row) = found.next()? {
+                    rows.push(serde_json::from_str::<HistoryItem>(
+                        &row.get::<_, String>(0)?,
+                    )?);
+                }
+            }
+            rows
+        } else {
+            store.recent_recycled_history(now - HISTORY_DAYS * 86_400, now, HISTORY_POOL_LIMIT)?
+        };
+        let mut pool = Self::from_items_with_mode(rows, policy, apps, now, manual);
         let future: Option<i64> = store.connection()?.query_row(
             "SELECT MIN(time) FROM history WHERE time>?1 AND json_extract(data,'$.status')='recycled'", [now], |row| row.get(0))?;
         if let Some(future) = future {
@@ -37,11 +54,22 @@ impl HistoryPool {
         Ok(pool)
     }
 
+    #[cfg(test)]
     fn from_items(
+        rows: Vec<HistoryItem>,
+        policy: &SafetyPolicy,
+        apps: &[InstalledApp],
+        now: i64,
+    ) -> Self {
+        Self::from_items_with_mode(rows, policy, apps, now, false)
+    }
+
+    fn from_items_with_mode(
         mut rows: Vec<HistoryItem>,
         policy: &SafetyPolicy,
         apps: &[InstalledApp],
         now: i64,
+        manual: bool,
     ) -> Self {
         let valid_until = rows
             .iter()
@@ -51,14 +79,17 @@ impl HistoryPool {
                     .saturating_add(1)
             })
             .filter(|&time| time > now)
-            .min();
+            .min()
+            .filter(|_| !manual);
         rows.sort_by(|a, b| b.time.cmp(&a.time).then_with(|| b.id.cmp(&a.id)));
         let mut seen = HashSet::new();
         let mut entries = Vec::new();
         for item in rows
             .into_iter()
             .filter(|row| {
-                row.status == "recycled" && (now - HISTORY_DAYS * 86_400..=now).contains(&row.time)
+                row.status == "recycled"
+                    && (0..=now).contains(&row.time)
+                    && (manual || row.time >= now - HISTORY_DAYS * 86_400)
             })
             .take(HISTORY_POOL_LIMIT)
         {
@@ -113,7 +144,12 @@ impl HistoryPool {
         Self {
             entries,
             valid_until,
+            manual,
         }
+    }
+
+    pub fn references_truncated(&self, references: &[HistoryReference]) -> bool {
+        self.manual && references.len() < self.entries.len()
     }
 
     pub fn valid_until(&self) -> Option<i64> {
@@ -135,15 +171,27 @@ impl HistoryPool {
             .entries
             .iter()
             .filter_map(|entry| {
-                let (score, basis) = similarity(&features, &entry.features);
-                (score > 0).then_some((score, basis, entry))
+                let (score, mut basis) = similarity(&features, &entry.features);
+                if score == 0 && self.manual {
+                    basis.push("手动选择的回收历史，未发现与当前文件明确匹配的线索".into());
+                }
+                (score > 0 || self.manual).then_some((score, basis, entry))
             })
             .collect();
-        ranked.sort_by(|a, b| {
-            b.0.cmp(&a.0)
-                .then_with(|| b.2.item.time.cmp(&a.2.item.time))
-                .then_with(|| a.2.item.id.cmp(&b.2.item.id))
-        });
+        if self.manual {
+            ranked.sort_by(|a, b| {
+                b.2.item
+                    .time
+                    .cmp(&a.2.item.time)
+                    .then_with(|| a.2.item.id.cmp(&b.2.item.id))
+            });
+        } else {
+            ranked.sort_by(|a, b| {
+                b.0.cmp(&a.0)
+                    .then_with(|| b.2.item.time.cmp(&a.2.item.time))
+                    .then_with(|| a.2.item.id.cmp(&b.2.item.id))
+            });
+        }
         let mut references = Vec::new();
         for (_, basis, entry) in ranked {
             let snapshot = entry.item.snapshot.as_ref();
@@ -164,7 +212,13 @@ impl HistoryPool {
                 references.pop();
                 continue;
             }
-            if references.len() == HISTORY_REFERENCE_LIMIT {
+            if references.len()
+                == if self.manual {
+                    MANUAL_HISTORY_REFERENCE_LIMIT
+                } else {
+                    HISTORY_REFERENCE_LIMIT
+                }
+            {
                 break;
             }
         }
@@ -382,6 +436,68 @@ mod tests {
             complete: true,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn default_history_remains_recent_and_relevant_while_manual_selection_can_include_old_unrelated_rows(
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("history.sqlite")).unwrap();
+        let now = chrono::Utc::now().timestamp();
+        store
+            .add_history(&history(
+                "related",
+                "D:\\HistoryFixture\\bundle-1.zip",
+                now - 1,
+            ))
+            .unwrap();
+        store
+            .add_history(&history(
+                "old",
+                "D:\\OtherFixture\\holiday.zip",
+                now - 181 * 86_400,
+            ))
+            .unwrap();
+        let mut failed = history("failed", "D:\\OtherFixture\\failed.zip", now - 1);
+        failed.status = "failed".into();
+        store.add_history(&failed).unwrap();
+        store
+            .add_history(&history(
+                "protected",
+                "D:\\PrivateFixture\\secret.zip",
+                now - 1,
+            ))
+            .unwrap();
+        let mut settings = Settings::default();
+        settings.llm.history_reference_enabled = true;
+        settings.protected_paths.push("D:\\PrivateFixture".into());
+        let target = file("D:\\HistoryFixture\\bundle-2.zip");
+        let default = HistoryPool::load(&store, &SafetyPolicy::new(settings.clone()), &[]).unwrap();
+        assert_eq!(
+            default
+                .references(&target)
+                .iter()
+                .map(|r| r.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["history:related"]
+        );
+        settings.history_reference_ids =
+            Some(vec!["old".into(), "failed".into(), "protected".into()]);
+        let manual = HistoryPool::load(&store, &SafetyPolicy::new(settings.clone()), &[]).unwrap();
+        let references = manual.references(&target);
+        assert_eq!(
+            references.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            vec!["history:old"]
+        );
+        assert!(references[0]
+            .match_basis
+            .iter()
+            .any(|part| part.contains("未发现")));
+        settings.history_reference_ids = Some(vec![]);
+        assert!(HistoryPool::load(&store, &SafetyPolicy::new(settings), &[])
+            .unwrap()
+            .references(&target)
+            .is_empty());
     }
     #[test]
     fn only_recent_successful_unprotected_relevant_history_is_used() {

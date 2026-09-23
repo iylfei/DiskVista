@@ -8,6 +8,7 @@ mod commands;
 mod locations;
 mod mutations;
 mod operations;
+mod reanalysis;
 mod scan_analysis;
 mod scans;
 mod settings_store;

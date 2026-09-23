@@ -20,7 +20,7 @@ impl Store {
         let root = self.require_finished(scan)?.root;
         let connection = self.connection()?;
         let flag = Arc::clone(&cancel);
-        connection.progress_handler(1000, Some(move || flag.load(Ordering::Relaxed)));
+        connection.progress_handler(1000, Some(move || flag.load(Ordering::Relaxed)))?;
         let fetch = |bound: &str, size: u64, id: i64, limit: usize| -> Result<Vec<FileRecord>> {
             let mut statement = connection.prepare(&format!("SELECT {FIELDS} FROM entries WHERE scan_id=?1 AND is_dir=0 AND logical>?2 AND complete=1 AND blocked=0 AND path_key<>?3
                 AND {bound} ORDER BY logical DESC,id LIMIT ?6"))?;

@@ -12,6 +12,7 @@ fn update_ai_consent(previous: &Settings, settings: &mut Settings) -> bool {
     }
     !settings.llm.enabled
         || previous.llm != settings.llm
+        || previous.history_reference_ids != settings.history_reference_ids
         || previous.community_enabled != settings.community_enabled
         || previous.labels != settings.labels
         || previous.excluded_llm_paths != settings.excluded_llm_paths
@@ -39,6 +40,14 @@ pub async fn save_settings(
         let _guard = state.mutations.lock().unwrap();
         if state.cleaning.load(Ordering::SeqCst) {
             return Err("回收执行期间不能更改安全设置".into());
+        }
+        if let Some(ids) = &settings.history_reference_ids {
+            if ids.len() > 100
+                || ids.iter().any(|id| id.is_empty() || id.len() > 128)
+                || ids.iter().collect::<std::collections::HashSet<_>>().len() != ids.len()
+            {
+                return Err("历史回收参考最多选择 100 条，记录编号不能重复或为空".into());
+            }
         }
         let previous = state.store.settings().map_err(error)?;
         if !settings.llm.base_url.is_empty() {

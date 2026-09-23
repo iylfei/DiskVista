@@ -63,6 +63,25 @@ fn pages_reach_all_history_with_stable_ties_and_preserve_internal_queries() {
 }
 
 #[test]
+fn reference_pages_only_offer_successful_records_with_matching_recent_order() {
+    let (_directory, store, _) = fixture(41);
+    let expected = store
+        .recent_recycled_history(0, chrono::Utc::now().timestamp(), 100)
+        .unwrap();
+    let mut actual = Vec::new();
+    for offset in (0..expected.len()).step_by(10) {
+        let page = store.recycled_history_page(offset as u64, 10).unwrap();
+        assert_eq!(page.total as usize, expected.len());
+        assert!(page.items.iter().all(|item| item.status == "recycled"));
+        actual.extend(page.items.into_iter().map(|item| item.id));
+    }
+    assert_eq!(
+        actual,
+        expected.into_iter().map(|item| item.id).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn history_page_bounds_empty_results_and_large_offsets() {
     let (_directory, empty, _) = fixture(0);
     let page = empty.history_page(0, 20).unwrap();

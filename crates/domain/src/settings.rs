@@ -16,6 +16,7 @@ pub struct Settings {
     pub ignored_paths: Vec<String>,
     pub excluded_llm_paths: Vec<String>,
     pub labels: BTreeMap<String, String>,
+    pub history_reference_ids: Option<Vec<String>>,
     pub llm: LlmSettings,
 }
 
@@ -31,6 +32,7 @@ impl Default for Settings {
             ignored_paths: Vec::new(),
             excluded_llm_paths: Vec::new(),
             labels: BTreeMap::new(),
+            history_reference_ids: None,
             llm: LlmSettings::default(),
         }
     }
@@ -82,5 +84,8 @@ mod tests {
     fn legacy_settings_default_to_simplified_chinese() {
         let settings: Settings = serde_json::from_str("{}").unwrap();
         assert_eq!(settings.language, "zh-CN");
+        assert!(settings.history_reference_ids.is_none());
+        let selected: Settings = serde_json::from_str(r#"{"historyReferenceIds":[]}"#).unwrap();
+        assert_eq!(selected.history_reference_ids, Some(Vec::new()));
     }
 }

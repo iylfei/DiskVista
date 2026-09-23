@@ -46,7 +46,7 @@ impl Store {
                 }
                 stop
             }),
-        );
+        )?;
         let result = (|| -> Result<bool> {
             let tx = connection.transaction()?;
             if !protection_only {
@@ -109,7 +109,7 @@ impl Store {
             tx.commit()?;
             Ok(true)
         })();
-        connection.progress_handler(0, None::<fn() -> bool>);
+        connection.progress_handler(0, None::<fn() -> bool>)?;
         match result {
             Err(error)
                 if interrupted.load(Ordering::Relaxed)

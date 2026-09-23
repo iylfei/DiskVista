@@ -1,0 +1,92 @@
+.main-content.settings-page {
+  overflow: hidden;
+}
+.settings-content {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.history-reference-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.history-reference-row > span {
+  min-width: 0;
+}
+.settings-toolbar {
+  flex: none;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 12px;
+}
+.settings-toolbar-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.settings-toolbar p {
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+}
+.settings-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.settings-tabs [role="tab"] {
+  border-color: transparent;
+  color: var(--muted);
+}
+.settings-tabs [aria-selected="true"] {
+  background: #eaf0f6;
+  color: #36658d;
+  border-color: #dce5ec;
+  font-weight: 600;
+}
+.settings-stack-panel {
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  flex: 1;
+  padding: 2px 4px 0 2px;
+}
+.settings-stack-panel[hidden] {
+  display: none;
+}
+#settings-panel-ai:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#settings-panel-ai > .settings-tabs {
+  flex: none;
+  margin-bottom: 12px;
+}
+
+.history-reference-pager {
+  align-items: center;
+}
+.history-reference-pager > span {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.settings-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  max-width: min(520px, calc(100vw - 32px));
+  padding: 12px 20px;
+  border-radius: 8px;
+  background: #28513d;
+  color: white;
+  box-shadow: 0 4px 18px #0002;
+  pointer-events: none;
+}
