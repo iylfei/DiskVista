@@ -25,7 +25,7 @@ export default function RulesPage({
       <section className="panel">
         <div className="section-heading">
           <div>
-            <h2>重要内容默认受保护</h2>
+            <h2>系统关键内容默认受保护</h2>
             <p>规则和 AI 只能给出建议；只有你可以在文件详情中解除保护。</p>
           </div>
           <span className="badge protected">默认开启</span>

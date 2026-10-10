@@ -1,6 +1,6 @@
 use cleaner_domain::*;
 use cleaner_engine::{
-    cleanup, context,
+    annotations, cleanup, context,
     scanner::{create_scan, run, ScanJob},
     store::Store,
 };
@@ -68,6 +68,14 @@ fn protected_descendants_and_content_consent() {
     let mixed = store
         .by_path(&s.id, root.join("mixed").to_str().unwrap())
         .unwrap();
+    assert!(!mixed.has_blocked_children);
+    assert!(cleanup::preview(&store, &s.id, &[mixed.id]).unwrap().items[0].allowed);
+    let environment = store
+        .by_path(&s.id, root.join("mixed/.env").to_str().unwrap())
+        .unwrap();
+    assert!(context::build(&store, &s.id, environment.id).is_err());
+    annotations::apply(&store, &s.id, environment.id, "protect", "").unwrap();
+    let mixed = store.by_path(&s.id, &mixed.path).unwrap();
     assert!(mixed.has_blocked_children);
     assert!(!cleanup::preview(&store, &s.id, &[mixed.id]).unwrap().items[0].allowed);
     let note = store

@@ -139,7 +139,9 @@ export default function DetailPanel({
           占用 {bytes(file.allocatedBytes ?? file.logicalBytes)}
           {file.allocatedBytes === null ? "（估算）" : ""}
         </p>
-        <span className={`badge ${a.risk}`}>{riskText(a.risk)}</span>
+        {a.risk !== "review" && (
+          <span className={`badge ${a.risk}`}>{riskText(a.risk)}</span>
+        )}
 
         <section>
           <h3>它可能是什么？</h3>

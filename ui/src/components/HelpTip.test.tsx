@@ -277,28 +277,35 @@ describe("AI output limit settings", () => {
     );
     expect(html).toContain("最低按 100 MiB 生效");
     expect(html).toContain("不包含目录或已明确所属应用的文件");
-    expect(html).toContain("每个文件最多 6");
-    expect(html).toContain("历史只作参考，不扩大分析范围");
+    expect(html).toContain("最多 6 条");
+    expect(html).toContain("历史仅供参考，不证明当前文件可以删除");
     expect(html).not.toContain("也会分析与回收历史相关的项目");
   });
 
-  it("places privacy and all three permissions after batch limits and before save/test actions", () => {
+  it("keeps analysis controls separate and puts AI consent before save/test actions", () => {
     const html = render();
     const positions = [
-      'id="ai-minimum-size"',
       'id="ai-request-limit"',
-      'id="ai-concurrency"',
       "重试也计入请求上限。",
       'class="privacy-note"',
-      "扫描完成后，自动分析来源未明确的大文件",
       'id="ai-metadata-consent"',
       'id="ai-history-reference"',
-      "历史只作参考，不扩大分析范围。",
+      "历史仅供参考，不证明当前文件可以删除。",
       ">测试连接</button>",
-      ">保存设置</button>",
+      ">保存语言模型配置</button>",
     ].map((text) => html.indexOf(text));
     expect(positions.every((position) => position >= 0)).toBe(true);
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
+    const analysisStart = html.indexOf('id="settings-panel-analysis"');
+    const aiStart = html.indexOf('id="settings-panel-ai"');
+    for (const control of [
+      'id="ai-minimum-size"',
+      'id="ai-concurrency"',
+      "扫描完成后，自动分析来源未明确的大文件",
+    ]) {
+      expect(html.indexOf(control)).toBeGreaterThan(analysisStart);
+      expect(html.indexOf(control)).toBeLessThan(aiStart);
+    }
   });
 });
 

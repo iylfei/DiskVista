@@ -24,7 +24,26 @@ impl SafetyPolicy {
         ];
         for key in ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"] {
             if let Ok(p) = std::env::var(key) {
-                roots.push(p);
+                for child in [
+                    "Windows Defender",
+                    "Windows Defender Advanced Threat Protection",
+                    "Windows NT",
+                    "WindowsPowerShell",
+                ] {
+                    roots.push(format!("{p}\\{child}"));
+                }
+            }
+        }
+        if let Ok(data) = std::env::var("ProgramData") {
+            for child in [
+                "Windows",
+                "Windows Defender",
+                "Crypto",
+                "Protect",
+                "Vault",
+                "Network",
+            ] {
+                roots.push(format!("{data}\\Microsoft\\{child}"));
             }
         }
         let mut containers: Vec<String> = [
@@ -91,36 +110,22 @@ impl SafetyPolicy {
                     | "windows.old"
                     | "windowsapps"
                     | "wpsystem"
-                    | "msocache"
                     | "driverstore"
             )
         }) {
             return Some("Windows 管理区域，只能通过系统入口处理".into());
         }
-        if let Ok(data) = std::env::var("ProgramData") {
-            if within(&p, &format!("{data}\\Microsoft"))
-                || within(&p, &format!("{data}\\Package Cache"))
-            {
-                return Some("系统托管应用数据，请通过系统设置管理".into());
-            }
-        }
         if self.system_roots.iter().any(|r| within(&p, r)) {
-            return Some("系统或程序安装区域，禁止直接回收".into());
+            return Some("系统关键内容，禁止直接回收".into());
         }
         if self.container_roots.contains(&p) {
             return Some("用户数据根目录，必须查看并选择具体子项".into());
-        }
-        if self.cloud_roots.iter().any(|r| within(&p, r)) {
-            return Some("云同步目录；删除可能同步到云端，请使用云盘管理入口".into());
         }
         if self.settings.protected_paths.iter().any(|r| within(&p, r)) {
             return Some("你已保护此路径".into());
         }
         if self.settings.ignored_paths.iter().any(|r| within(&p, r)) {
             return Some("你已忽略此路径".into());
-        }
-        if sensitive_path(&p) {
-            return Some("凭据、个人身份或敏感应用数据，禁止通用清理".into());
         }
         let name = file.name.to_lowercase();
         if name.starts_with("ntuser.")
@@ -150,17 +155,14 @@ impl SafetyPolicy {
         path.len() > 3
             && !self.container_roots.contains(&path)
             && !self.system_roots.iter().any(|p| normalize(p) == path)
+            && !["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"]
+                .iter()
+                .filter_map(|key| std::env::var(key).ok())
+                .any(|root| normalize(&root) == path)
     }
 
     pub fn can_sample(&self, file: &FileRecord) -> bool {
-        if file.is_dir
-            || self.reason(file).is_some()
-            || self
-                .settings
-                .excluded_llm_paths
-                .iter()
-                .any(|r| within(&file.path, r))
-        {
+        if file.is_dir || !self.can_send_metadata(file) {
             return false;
         }
         let p = normalize(&file.path);
@@ -178,6 +180,17 @@ impl SafetyPolicy {
                 .as_deref(),
             Some("json" | "ini" | "toml" | "yaml" | "yml" | "txt" | "md" | "cfg")
         )
+    }
+
+    pub fn can_send_metadata(&self, file: &FileRecord) -> bool {
+        self.reason(file).is_none()
+            && !sensitive_path(&file.path)
+            && !self.cloud_roots.iter().any(|r| within(&file.path, r))
+            && !self
+                .settings
+                .excluded_llm_paths
+                .iter()
+                .any(|r| within(&file.path, r))
     }
 }
 
@@ -217,22 +230,31 @@ pub fn sensitive_path(path: &str) -> bool {
             || c == "wechat files"
             || c == "weixin"
             || c == "tencent files"
-    }) || [".pem", ".pfx", ".key", ".kdbx", ".sqlite", ".db"]
-        .iter()
-        .any(|ext| p.ends_with(ext))
+    }) || [
+        ".pem",
+        ".pfx",
+        ".key",
+        ".kdbx",
+        ".sqlite",
+        ".db",
+        ".sqlite-wal",
+        ".sqlite-shm",
+        ".db-wal",
+        ".db-shm",
+    ]
+    .iter()
+    .any(|ext| p.ends_with(ext))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn system_and_credentials_cannot_be_overridden() {
+    fn system_content_remains_protected() {
         let policy = SafetyPolicy::new(Settings::default());
         for path in [
             "C:\\Windows\\System32\\drivers\\disk.sys",
             "D:\\$Recycle.Bin\\a",
-            "D:\\data\\.env",
-            "D:\\data\\wallet.dat",
         ] {
             let f = FileRecord {
                 path: path.into(),
@@ -240,6 +262,37 @@ mod tests {
             };
             assert!(policy.reason(&f).is_some(), "{path}");
         }
+    }
+    #[test]
+    fn application_data_is_recyclable_but_private_data_is_not_sent_to_ai() {
+        let policy = SafetyPolicy::new(Settings::default());
+        for path in [
+            "D:\\data\\.env",
+            "D:\\data\\wallet.dat",
+            "C:\\Users\\15830\\AppData\\Roaming\\Kiro\\User\\globalStorage\\kiro.kiroagent\\index\\docs.sqlite",
+            "C:\\Users\\15830\\AppData\\Roaming\\Kiro\\User\\globalStorage\\kiro.kiroagent\\index\\index.sqlite-wal",
+        ] {
+            let file = FileRecord { path: path.into(), ..Default::default() };
+            assert!(policy.reason(&file).is_none(), "{path}");
+            assert!(!policy.can_send_metadata(&file), "{path}");
+            assert!(!policy.can_sample(&file), "{path}");
+        }
+        for key in ["ProgramFiles", "ProgramData"] {
+            let root = std::env::var(key).unwrap();
+            assert!(policy
+                .reason(&FileRecord {
+                    path: format!("{root}\\ExampleApp\\data.db"),
+                    ..Default::default()
+                })
+                .is_none());
+        }
+        let root = std::env::var("ProgramFiles").unwrap();
+        assert!(policy
+            .reason(&FileRecord {
+                path: format!("{root}\\Windows Defender\\MsMpEng.exe"),
+                ..Default::default()
+            })
+            .is_some());
     }
     #[test]
     fn regular_user_data_remains_reviewable() {

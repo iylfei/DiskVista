@@ -15,6 +15,7 @@ mod reanalysis;
 pub use count_cache::{CountCache, CountCacheStats};
 mod entry_data;
 mod history_paging;
+mod protection;
 mod query;
 mod recycled_history;
 mod retention;

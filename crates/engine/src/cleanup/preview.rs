@@ -91,16 +91,13 @@ pub fn preview_with_progress(
         if accepted.iter().any(|p| within(&file.path, p)) {
             continue;
         }
-        let reason = policy
-            .reason(&file)
-            .or_else(|| apps.installed_reason(&file))
-            .or_else(|| {
-                if !file.complete || file.has_blocked_children {
-                    Some("目标或其后代扫描不完整/受保护".into())
-                } else {
-                    None
-                }
-            });
+        let reason = policy.reason(&file).or_else(|| {
+            if !file.complete || file.has_blocked_children {
+                Some("目标或其后代扫描不完整/受保护".into())
+            } else {
+                None
+            }
+        });
         if let Some(reason) = reason {
             items.push(blocked(&file, &reason));
             continue;
@@ -115,10 +112,7 @@ pub fn preview_with_progress(
                 continue;
             }
         };
-        if let Some(reason) = policy
-            .reason(&current)
-            .or_else(|| apps.installed_reason(&current))
-        {
+        if let Some(reason) = policy.reason(&current) {
             items.push(blocked(&file, &reason));
             continue;
         }
@@ -136,15 +130,23 @@ pub fn preview_with_progress(
         };
         report.check()?;
         accepted.push(file.path.clone());
-        let risk = rules.classify_indexed(&file, &policy, &apps).risk;
+        let assessment = rules.classify_indexed(&file, &policy, &apps);
+        let mut consequence = assessment.consequence;
+        if policy
+            .cloud_roots
+            .iter()
+            .any(|root| within(&file.path, root) || (file.is_dir && within(root, &file.path)))
+        {
+            consequence.push_str("；删除可能同步到云端及其他设备");
+        }
         items.push(CleanupItem {
             entry_id: file.id,
             path: file.path,
             bytes,
             fingerprint: identity,
-            risk,
+            risk: assessment.risk,
             allowed: true,
-            reason: "回收前检查文件占用及受保护路径".into(),
+            reason: consequence,
         });
     }
     report.value.targets_done = report.value.targets_total;

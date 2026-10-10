@@ -86,14 +86,7 @@ impl<'a> ContextBuilder<'a> {
     }
 
     fn allowed(&self, file: &FileRecord) -> bool {
-        self.policy.reason(file).is_none()
-            && self.apps.installed_reason(file).is_none()
-            && !self
-                .policy
-                .settings
-                .excluded_llm_paths
-                .iter()
-                .any(|path| cleaner_platform::within(&file.path, path))
+        self.policy.can_send_metadata(file) && self.apps.installed_reason(file).is_none()
     }
 
     pub fn build(&self, id: i64) -> Result<AnalysisContext> {
@@ -478,6 +471,37 @@ mod tests {
         settings.excluded_llm_paths.push(root.path);
         store.put("settings", &settings).unwrap();
         assert!(build(&store, "s", root.id).is_err());
+    }
+
+    #[test]
+    fn recyclable_sensitive_files_still_stay_out_of_ai_metadata() {
+        let (_temp, store, root) = snapshot();
+        let files: Vec<_> = [
+            "docs.sqlite",
+            "index.sqlite-wal",
+            "credentials.json",
+            "ordinary.txt",
+        ]
+        .into_iter()
+        .map(|name| FileRecord {
+            path: format!("{}\\{name}", root.path),
+            parent: root.path.clone(),
+            name: name.into(),
+            complete: true,
+            ..Default::default()
+        })
+        .collect();
+        Store::insert_batch(&mut store.connection().unwrap(), "s", &files).unwrap();
+        let context = build(&store, "s", root.id).unwrap();
+        assert_eq!(context.files.len(), 1);
+        assert_eq!(context.files[0].name, "ordinary.txt");
+        assert!(context.truncated);
+        let policy = SafetyPolicy::new(Settings::default());
+        for file in files.iter().take(3) {
+            assert!(policy.reason(file).is_none());
+            let file = store.by_path("s", &file.path).unwrap();
+            assert!(build(&store, "s", file.id).is_err());
+        }
     }
 
     #[test]

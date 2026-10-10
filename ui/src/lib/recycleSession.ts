@@ -9,11 +9,12 @@ import type {
 
 type Target = Pick<FileRecord, "id" | "isDir">;
 export interface RecycleDialogState {
-  phase: "checking" | "executing" | "error" | "complete";
+  phase: "checking" | "confirming" | "executing" | "error" | "complete";
   error: string;
   cancelRequested: boolean;
   cancelError: string;
   checkProgress: CleanupCheckProgress | null;
+  preview: CleanupPreview | null;
 }
 export const initialRecycleState: RecycleDialogState = {
   phase: "checking",
@@ -21,6 +22,7 @@ export const initialRecycleState: RecycleDialogState = {
   cancelRequested: false,
   cancelError: "",
   checkProgress: null,
+  preview: null,
 };
 function validatePreview(
   result: CleanupPreview,
@@ -115,6 +117,7 @@ export function createRecycleSession({
       !live ||
       running ||
       closing ||
+      state.phase === "confirming" ||
       state.phase === "executing" ||
       state.phase === "complete"
     )
@@ -150,26 +153,40 @@ export function createRecycleSession({
         if (live && current === request) failed(error);
         return;
       }
-      checkId = null;
       pendingCheck = null;
-      update({ ...initialRecycleState, phase: "executing" });
-      onBusyChange(true);
-      let result: HistoryItem[] | null = null;
-      try {
-        result = await api<HistoryItem[]>("execute_cleanup", {
-          previewId: preview.id,
-          acknowledgeRisk: true,
-        });
-        update({ ...initialRecycleState, phase: "complete" });
-      } catch (error) {
-        failed(error);
-      } finally {
-        onBusyChange(false);
-      }
-      if (result !== null) onDone(result);
+      update({ ...initialRecycleState, phase: "confirming", preview });
     } finally {
       running = false;
     }
+  }
+  async function confirm() {
+    if (
+      !live ||
+      running ||
+      closing ||
+      state.phase !== "confirming" ||
+      !state.preview
+    )
+      return;
+    const preview = state.preview;
+    checkId = null;
+    running = true;
+    update({ ...initialRecycleState, phase: "executing" });
+    onBusyChange(true);
+    let result: HistoryItem[] | null = null;
+    try {
+      result = await api<HistoryItem[]>("execute_cleanup", {
+        previewId: preview.id,
+        acknowledgeRisk: true,
+      });
+      update({ ...initialRecycleState, phase: "complete" });
+    } catch (error) {
+      failed(error);
+    } finally {
+      running = false;
+      onBusyChange(false);
+    }
+    if (result !== null) onDone(result);
   }
   async function cancelRemaining() {
     if (!live || state.phase !== "executing" || state.cancelRequested) return;
@@ -205,7 +222,7 @@ export function createRecycleSession({
       return Promise.resolve(true);
     }
     const abandoned = checkId;
-    request += 1; // Prevent a just-completed preview from entering execute_cleanup.
+    request += 1; // Discard a just-completed preview when cancellation starts.
     stopProgress();
     update({ ...state, cancelRequested: true, cancelError: "" });
     closing = (async () => {
@@ -232,6 +249,7 @@ export function createRecycleSession({
   }
   const session = {
     run,
+    confirm,
     cancelRemaining,
     close,
     dispose,

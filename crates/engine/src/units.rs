@@ -211,10 +211,7 @@ fn build_with_rules(
             complete: b.node.complete,
             ..Default::default()
         };
-        if !file.complete
-            || policy.reason(&file).is_some()
-            || index.installed_reason(&file).is_some()
-        {
+        if !file.complete || policy.reason(&file).is_some() {
             b.node.risk = "protected".into();
         }
     }
@@ -694,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn portable_application_in_program_files_is_identified_but_stays_protected() {
+    fn portable_application_in_program_files_is_identified_and_reviewable() {
         let root = std::env::var("ProgramFiles").unwrap();
         let app = format!("{root}\\FixturePortable");
         let executable = format!("{app}\\app.exe");
@@ -706,7 +703,7 @@ mod tests {
         let result = build(&store, "s").unwrap();
         assert_eq!(result[0].name, "FixturePortable");
         assert_eq!(result[0].kind, "possible_application");
-        assert!(result[0].components[0].protected);
+        assert!(!result[0].components[0].protected);
         let policy = SafetyPolicy::new(Default::default());
         let index = ApplicationIndex::for_scan(&store, "s", &policy).unwrap();
         let file = store.by_path("s", &executable).unwrap();
@@ -715,7 +712,7 @@ mod tests {
             .classify_indexed(&file, &policy, &index);
         assert_eq!(assessment.owner.as_deref(), Some("FixturePortable"));
         assert_eq!(assessment.confidence, "low");
-        assert_eq!(assessment.risk, "protected");
+        assert_eq!(assessment.risk, "review");
     }
 
     #[test]

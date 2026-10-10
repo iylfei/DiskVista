@@ -23,7 +23,7 @@ New-Item -ItemType Directory -Path $portable -Force | Out-Null
 foreach ($name in @('diskvista.exe', 'diskvista-worker.exe')) {
     Copy-Item -LiteralPath (Join-Path $artifactRoot $name) -Destination $portable
 }
-foreach ($name in @('README.md', 'README.zh-CN.md', 'third-party')) {
+foreach ($name in @('README.md', 'README.zh-CN.md', 'LICENSE', 'third-party')) {
     Copy-Item -LiteralPath (Join-Path $projectRoot $name) -Destination $portable -Recurse
 }
 $zip = Join-Path $artifactRoot "DiskVista-$Version-win-x64.zip"

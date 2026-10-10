@@ -1,4 +1,23 @@
 const exactEnglish: Record<string, string> = {
+  历史回收参考: "Recycling history references",
+  确认移入回收站: "Confirm move to Recycle Bin",
+  "系统关键文件和驱动默认受保护。":
+    "Critical system files and drivers are protected by default.",
+  "允许向语言模型发送脱敏元数据（不含文件正文）":
+    "Allow sending redacted metadata to the language model (no file content)",
+  系统关键内容默认受保护: "Critical system content is protected by default",
+  "系统关键内容，禁止直接回收":
+    "Critical system content cannot be recycled directly",
+  "删除可能丢失应用数据、登录信息或个人内容；请确认不再需要并做好备份":
+    "Deleting this may remove application data, login information, or personal content. Confirm that it is no longer needed and back up anything you want to keep.",
+  "删除应用文件或用户数据可能导致应用无法启动、配置丢失或个人内容丢失。请先关闭相关应用，并确认已备份需要保留的数据。":
+    "Deleting application files or user data may prevent an app from starting or remove settings and personal content. Close the relevant apps and back up data you want to keep.",
+  "将移入回收站：{1} 项 · {2}": "Move to Recycle Bin: {1} items · {2}",
+  "跳过：": "Skip: ",
+  "未通过检查的 {1} 项将跳过。":
+    "The {1} items that failed the check will be skipped.",
+  "文件将移入 Windows 回收站；应用数据不保证可以重新生成。":
+    "Files will be moved to the Windows Recycle Bin. Application data may not be regenerated.",
   功能介绍: "Feature tour",
   跳过引导: "Skip tour",
   功能介绍进度: "Feature tour progress",
@@ -996,6 +1015,10 @@ export function englishText(value: string): string {
   const leading = match?.[1] ?? "";
   const core = match?.[2] ?? value;
   const trailing = match?.[3] ?? "";
+  const cloudWarning = "；删除可能同步到云端及其他设备";
+  if (core.endsWith(cloudWarning)) {
+    return `${leading}${englishText(core.slice(0, -cloudWarning.length))}; deletion may sync to the cloud and other devices${trailing}`;
+  }
   const exact = exactEnglish[core];
   if (exact !== undefined) return `${leading}${exact}${trailing}`;
   for (const [source, target] of templateEnglish) {

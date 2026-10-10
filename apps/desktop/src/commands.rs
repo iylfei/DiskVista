@@ -39,6 +39,7 @@ pub async fn bootstrap(
                 state.store.recover_interrupted().map_err(error)?;
                 let keep = state.store.settings().map_err(error)?.scan_retention;
                 state.store.prune_scans(keep).map_err(error)?;
+                state.store.refresh_protection_policy().map_err(error)?;
                 *initialized = true;
             }
         }

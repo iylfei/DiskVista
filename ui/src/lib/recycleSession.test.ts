@@ -67,13 +67,27 @@ beforeEach(() => {
   call.mockReset();
 });
 
-describe("one-click recycle session", () => {
-  it("checks and then immediately executes with risk acknowledgement", async () => {
+async function confirm(run: ReturnType<typeof open>) {
+  await vi.waitFor(() => expect(run.latest().phase).toBe("confirming"));
+  void run.session.confirm();
+}
+
+describe("confirmed recycle session", () => {
+  it("waits for explicit confirmation before executing with risk acknowledgement", async () => {
     const history = [{ status: "recycled" }] as HistoryItem[];
     call.mockResolvedValueOnce(preview()).mockResolvedValueOnce(history);
 
     const run = open();
 
+    await vi.waitFor(() => expect(run.latest().phase).toBe("confirming"));
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(run.onBusyChange).not.toHaveBeenCalled();
+    expect(run.onDone).not.toHaveBeenCalled();
+    await run.session.run();
+    expect(call).toHaveBeenCalledTimes(1);
+    const execution = run.session.confirm();
+    await run.session.confirm();
+    await execution;
     await vi.waitFor(() => expect(run.latest().phase).toBe("complete"));
     expect(call.mock.calls).toEqual([
       [
@@ -112,6 +126,7 @@ describe("one-click recycle session", () => {
 
     const run = open(files);
 
+    await confirm(run);
     await vi.waitFor(() => expect(run.onDone).toHaveBeenCalledOnce());
     expect(call).toHaveBeenNthCalledWith(1, "preview_cleanup", {
       scanId: "scan-one",
@@ -216,6 +231,7 @@ describe("one-click recycle session", () => {
 
     pending.resolve(preview());
     await duplicate;
+    await confirm(run);
     await vi.waitFor(() => expect(run.latest().phase).toBe("complete"));
     expect(call).toHaveBeenCalledTimes(2);
   });
@@ -245,6 +261,7 @@ describe("one-click recycle session", () => {
       .mockResolvedValueOnce(preview({ id: "stale" }))
       .mockRejectedValueOnce(new Error("文件已变化"));
     const run = open();
+    await confirm(run);
     await vi.waitFor(() => expect(run.latest().phase).toBe("error"));
     expect(run.latest().error).toBe("文件已变化");
 
@@ -253,6 +270,9 @@ describe("one-click recycle session", () => {
       .mockResolvedValueOnce(preview({ id: "fresh" }))
       .mockResolvedValueOnce(history);
     await run.session.run();
+    expect(run.latest().phase).toBe("confirming");
+    expect(call).toHaveBeenCalledTimes(3);
+    await run.session.confirm();
 
     expect(call.mock.calls.map(([command]) => command)).toEqual([
       "preview_cleanup",
@@ -281,6 +301,7 @@ describe("one-click recycle session", () => {
       .mockReturnValueOnce(execution.promise)
       .mockReturnValueOnce(cancellation.promise);
     const run = open();
+    await confirm(run);
     await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(2));
 
     const cancel = run.session.cancelRemaining();
@@ -313,6 +334,7 @@ describe("one-click recycle session", () => {
       .mockRejectedValueOnce(new Error("取消暂不可用"))
       .mockResolvedValueOnce(undefined);
     const run = open();
+    await confirm(run);
     await vi.waitFor(() => expect(call).toHaveBeenCalledTimes(2));
 
     await run.session.cancelRemaining();
@@ -338,6 +360,7 @@ describe("one-click recycle session", () => {
       .mockResolvedValueOnce(preview())
       .mockReturnValueOnce(execution.promise);
     const run = open();
+    await confirm(run);
     await vi.waitFor(() => expect(run.onBusyChange).toHaveBeenCalledWith(true));
     const stateCount = run.states.length;
 
@@ -349,6 +372,22 @@ describe("one-click recycle session", () => {
     expect(run.states).toHaveLength(stateCount);
     expect(run.onDone).toHaveBeenCalledWith(history);
     expect(run.onBusyChange.mock.calls).toEqual([[true], [false]]);
+  });
+});
+
+describe("confirmation cancellation", () => {
+  it("closing the confirmation discards the preview without recycling", async () => {
+    call.mockResolvedValueOnce(preview());
+    const run = open();
+    await vi.waitFor(() => expect(run.latest().phase).toBe("confirming"));
+    expect(await run.session.close()).toBe(true);
+    await run.session.confirm();
+    expect(call.mock.calls.map(([command]) => command)).toEqual([
+      "preview_cleanup",
+      "cancel_cleanup_check",
+    ]);
+    expect(run.onBusyChange).not.toHaveBeenCalled();
+    expect(run.onDone).not.toHaveBeenCalled();
   });
 });
 

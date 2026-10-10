@@ -27,8 +27,7 @@ impl<'a> Classifier<'a> {
             .protected_paths
             .iter()
             .chain(&policy.settings.ignored_paths)
-            .map(String::as_str)
-            .chain(apps.installation_roots());
+            .map(String::as_str);
         for root in roots {
             let root = normalize(root);
             for (end, _) in root.match_indices('\\') {

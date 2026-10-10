@@ -32,6 +32,7 @@ function view(state: RecycleDialogState = initialRecycleState, files = [file]) {
     state,
     onClose: noop,
     onRetry: noop,
+    onConfirm: noop,
     onCancelRemaining: noop,
   });
 }
@@ -47,8 +48,50 @@ function buttons(node: ReactNode): ReactElement<Record<string, unknown>>[] {
   return found;
 }
 
-describe("one-click basket recycle dialog", () => {
-  it("shows stage, target and examined-entry counts without estimating an elapsed-time percentage", () => {
+describe("confirmed basket recycle dialog", () => {
+  it("explains deletion consequences and exposes an explicit confirmation", () => {
+    const confirm = vi.fn();
+    const component = RecycleDialogView({
+      files: [file],
+      state: {
+        ...initialRecycleState,
+        phase: "confirming",
+        preview: {
+          id: "preview",
+          scanId: "scan-one",
+          created: 1,
+          policyFingerprint: "policy",
+          pendingBytes: 4096,
+          requiresExtraConfirmation: true,
+          items: [
+            {
+              entryId: 7,
+              path: file.path,
+              bytes: 4096,
+              fingerprint: "identity",
+              risk: "review",
+              allowed: true,
+              reason: "删除可能丢失配置和个人内容",
+            },
+          ],
+        },
+      },
+      onClose: noop,
+      onRetry: noop,
+      onCancelRemaining: noop,
+      onConfirm: confirm,
+    });
+    const html = renderToStaticMarkup(component);
+    expect(html).toContain("删除可能丢失配置和个人内容");
+    expect(html).toContain("确认移入回收站");
+    expect(html).not.toContain("需要确认");
+    const button = buttons(component).find(
+      (item) => item.props.children === "确认移入回收站",
+    );
+    (button?.props.onClick as () => void)();
+    expect(confirm).toHaveBeenCalledOnce();
+  });
+  it("shows target progress without estimating an elapsed-time percentage", () => {
     const html = renderToStaticMarkup(
       view({
         ...initialRecycleState,
@@ -61,10 +104,8 @@ describe("one-click basket recycle dialog", () => {
         },
       }),
     );
-    expect(html).toContain("核对当前文件");
-    expect(html).toContain("1 / 3");
-    expect(html).toContain("640");
-    expect(html).toContain("&lt;target&gt;");
+    expect(html).toContain("正在准备…");
+    expect(html).toContain(file.path);
     expect(html).toContain('value="1"');
     expect(html).toContain('max="3"');
     expect(html).toContain("取消并关闭");
@@ -145,6 +186,7 @@ describe("one-click basket recycle dialog", () => {
       state: { ...initialRecycleState, phase: "executing" },
       onClose: noop,
       onRetry: noop,
+      onConfirm: noop,
       onCancelRemaining: cancel,
     });
     const html = renderToStaticMarkup(component);
@@ -195,6 +237,7 @@ describe("one-click basket recycle dialog", () => {
       },
       onClose: noop,
       onRetry: retry,
+      onConfirm: noop,
       onCancelRemaining: noop,
     });
     const html = renderToStaticMarkup(component);

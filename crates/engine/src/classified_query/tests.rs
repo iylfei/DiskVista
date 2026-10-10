@@ -399,7 +399,7 @@ fn filtered_pages_and_fast_pages_share_current_protection_and_descendant_checks(
     let protected = cache
         .query(&fixture.store, &q, &classifier, "origin")
         .unwrap();
-    assert_eq!(protected.total, 4);
+    assert_eq!(protected.total, 3);
     for file in &protected.items {
         let visible = all.items.iter().find(|other| other.id == file.id).unwrap();
         assert_eq!(
@@ -414,14 +414,18 @@ fn filtered_pages_and_fast_pages_share_current_protection_and_descendant_checks(
             .query(&fixture.store, &q, &classifier, "origin")
             .unwrap()
             .total,
-        5
+        4
     );
     q.risk = Some("unknown".into());
     let unknown = cache
         .query(&fixture.store, &q, &classifier, "origin")
         .unwrap();
-    assert_eq!(unknown.total, 1);
-    assert_eq!(unknown.items[0].name, "ordinary.bin");
+    assert_eq!(unknown.total, 2);
+    assert!(unknown.items.iter().any(|file| file.name == "ordinary.bin"));
+    assert!(unknown
+        .items
+        .iter()
+        .any(|file| file.name == "InstalledParent"));
     assert_eq!(fixture.raw_snapshot(), original);
 }
 
@@ -601,7 +605,7 @@ fn unfinished_scan_does_not_cache_a_partial_view() {
 }
 
 #[test]
-fn installation_protection_survives_removal_of_a_vendor_origin() {
+fn installation_descendants_do_not_protect_an_ordinary_parent() {
     let parent = format!("{ROOT}\\Container");
     let install_root = format!("{parent}\\Epic Games");
     let mut directory = file(&parent, 100);
@@ -630,6 +634,11 @@ fn installation_protection_survives_removal_of_a_vendor_origin() {
     let mut q = query();
     q.parent = Some(ROOT.into());
     q.risk = Some("protected".into());
+    let result = QueryCache::default()
+        .query(&fixture.store, &q, &classifier, "origin")
+        .unwrap();
+    assert_eq!(result.total, 0);
+    q.risk = Some("review".into());
     let result = QueryCache::default()
         .query(&fixture.store, &q, &classifier, "origin")
         .unwrap();

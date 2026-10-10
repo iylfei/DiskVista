@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { FileRecord, HistoryItem } from "../lib/types";
+import { bytes } from "../lib/api";
 import {
   createRecycleSession,
   initialRecycleState,
@@ -19,16 +20,21 @@ export function RecycleDialogView({
   state,
   onClose,
   onRetry,
+  onConfirm,
   onCancelRemaining,
 }: {
   files: FileRecord[];
   state: RecycleDialogState;
   onClose: () => void;
   onRetry: () => void;
+  onConfirm: () => void;
   onCancelRemaining: () => void;
 }) {
   const executing = state.phase === "executing";
   const checking = state.phase === "checking";
+  const preview = state.phase === "confirming" ? state.preview : null;
+  const allowed = preview?.items.filter((item) => item.allowed) ?? [];
+  const blocked = preview?.items.filter((item) => !item.allowed) ?? [];
   const progress = checking ? state.checkProgress : null;
   return (
     <Modal
@@ -45,6 +51,35 @@ export function RecycleDialogView({
             ? files[0].path
             : `待清理清单：${files.length} 项`}
         </p>
+        {preview && (
+          <>
+            <p className="recycle-directory-warning">
+              删除应用文件或用户数据可能导致应用无法启动、配置丢失或个人内容丢失。请先关闭相关应用，并确认已备份需要保留的数据。
+            </p>
+            <p className="recycle-preview-total">
+              {`将移入回收站：${allowed.length} 项 · ${bytes(preview.pendingBytes)}`}
+            </p>
+            <ul className="recycle-preview">
+              {preview.items.map((item) => (
+                <li key={item.entryId}>
+                  <p className="path-text">{item.path}</p>
+                  <p
+                    className={item.allowed ? "recycle-impact" : "warning-text"}
+                  >
+                    {!item.allowed && <strong>跳过：</strong>}
+                    {item.reason}
+                  </p>
+                </li>
+              ))}
+            </ul>
+            {blocked.length > 0 && (
+              <p className="muted">{`未通过检查的 ${blocked.length} 项将跳过。`}</p>
+            )}
+            <p className="muted">
+              文件将移入 Windows 回收站；应用数据不保证可以重新生成。
+            </p>
+          </>
+        )}
         {checking && (
           <p role="status">
             {state.cancelRequested ? "正在取消…" : "正在准备…"}
@@ -52,9 +87,7 @@ export function RecycleDialogView({
         )}
         {executing && (
           <p role="status">
-            {state.cancelRequested
-              ? "正在取消剩余项…"
-              : "正在移入回收站…"}
+            {state.cancelRequested ? "正在取消剩余项…" : "正在移入回收站…"}
           </p>
         )}
         {(state.phase === "checking" || executing) && (
@@ -66,11 +99,7 @@ export function RecycleDialogView({
                 : undefined
             }
             max={progress?.targetsTotal || undefined}
-            aria-label={
-              executing
-                ? "正在移入回收站…"
-                : "正在准备…"
-            }
+            aria-label={executing ? "正在移入回收站…" : "正在准备…"}
           />
         )}
         {state.error && (
@@ -102,8 +131,18 @@ export function RecycleDialogView({
           onClick={onClose}
           disabled={executing || state.cancelRequested}
         >
-          {checking ? "取消并关闭" : "关闭"}
+          {checking ? "取消并关闭" : preview ? "取消" : "关闭"}
         </button>
+        {preview && (
+          <button
+            type="button"
+            className="primary"
+            onClick={onConfirm}
+            disabled={state.cancelRequested}
+          >
+            确认移入回收站
+          </button>
+        )}
       </footer>
     </Modal>
   );
@@ -154,6 +193,9 @@ export default function RecycleDialog({
       }}
       onRetry={() => {
         if (session.current?.key === key) void session.current.value.run();
+      }}
+      onConfirm={() => {
+        if (session.current?.key === key) void session.current.value.confirm();
       }}
       onCancelRemaining={() => {
         if (session.current?.key === key)

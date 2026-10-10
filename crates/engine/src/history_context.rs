@@ -121,7 +121,7 @@ impl HistoryPool {
                     .any(|path| {
                         within(&file.path, path) || (may_be_directory && within(path, &file.path))
                     });
-            if policy.reason(&file).is_some()
+            if !policy.can_send_metadata(&file)
                 || policy.installed_reason(&file, apps).is_some()
                 || protected_overlap
                 || (may_be_directory

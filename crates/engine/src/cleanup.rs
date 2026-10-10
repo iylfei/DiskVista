@@ -96,17 +96,13 @@ fn prepare_recycle(
     path: &str,
     identity: &str,
     policy: &SafetyPolicy,
-    apps: &crate::application_index::ApplicationIndex,
     cancel: &AtomicBool,
 ) -> Result<u64> {
     let live = live_tree_cancellable(path, cancel)?;
     if live.first().and_then(|file| file.identity.as_deref()) != Some(identity) {
         bail!("目标已被替换，请重新选择");
     }
-    if let Some(reason) = live
-        .iter()
-        .find_map(|f| policy.reason(f).or_else(|| apps.installed_reason(f)))
-    {
+    if let Some(reason) = live.iter().find_map(|f| policy.reason(f)) {
         bail!("回收开始前保护策略阻止：{reason}");
     }
     ensure_not_in_use(&live, cancel)?;
@@ -188,10 +184,7 @@ pub fn execute(
             // Fail early for a missing or protected target; enumerate only in the Shell callback.
             let root = filesystem::validate_local_path(&item.path)?;
             let file = filesystem::inspect(&root)?;
-            if let Some(reason) = policy
-                .reason(&file)
-                .or_else(|| apps.installed_reason(&file))
-            {
+            if let Some(reason) = policy.reason(&file) {
                 bail!("保护策略阻止：{reason}");
             }
             Ok(())
@@ -206,11 +199,9 @@ pub fn execute(
                     .or_insert_with(|| filesystem::free_space(&volume).ok());
                 let fp = item.fingerprint.clone();
                 let policy = Arc::clone(&policy);
-                let apps = Arc::clone(&apps);
                 let item_cancel = cancel.clone();
-                let predelete = move || -> Result<u64> {
-                    prepare_recycle(&path, &fp, &policy, &apps, &item_cancel)
-                };
+                let predelete =
+                    move || -> Result<u64> { prepare_recycle(&path, &fp, &policy, &item_cancel) };
                 prepared.push(Prepared {
                     history_index: history.len(),
                     volume,
@@ -284,9 +275,8 @@ mod tests {
         std::fs::write(&child, "before").unwrap();
         let identity = filesystem::inspect(&path).unwrap().identity.unwrap();
         let policy = SafetyPolicy::new(Settings::default());
-        let apps = crate::application_index::ApplicationIndex::new(&[], &policy);
         let cancel = AtomicBool::new(false);
-        let check = |id: &str| prepare_recycle(path.to_str().unwrap(), id, &policy, &apps, &cancel);
+        let check = |id: &str| prepare_recycle(path.to_str().unwrap(), id, &policy, &cancel);
         std::fs::write(&child, "changed since selection").unwrap();
         assert!(check(&identity).is_ok());
         assert!(check("different-file-id")
@@ -301,10 +291,20 @@ mod tests {
         assert!(check(&identity).is_err());
         drop(lock);
         std::fs::write(path.join(".env"), "SYNTHETIC=value").unwrap();
-        assert!(check(&identity)
-            .unwrap_err()
-            .to_string()
-            .contains("保护策略"));
+        assert!(check(&identity).is_ok());
+        let mut settings = Settings::default();
+        settings
+            .protected_paths
+            .push(child.to_str().unwrap().into());
+        assert!(prepare_recycle(
+            path.to_str().unwrap(),
+            &identity,
+            &SafetyPolicy::new(settings),
+            &cancel
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("保护策略"));
         cancel.store(true, Ordering::Relaxed);
         assert!(check(&identity).unwrap_err().to_string().contains("取消"));
     }
@@ -334,5 +334,124 @@ mod tests {
         )
         .unwrap();
         assert!(!preview(&store, "s", &[1]).unwrap().items[0].allowed);
+    }
+
+    #[test]
+    fn app_databases_are_allowed_with_consequences_and_explicit_acknowledgement() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("Kiro");
+        let user = app.join("User");
+        std::fs::create_dir_all(&user).unwrap();
+        let database = user.join("docs.sqlite");
+        std::fs::write(&database, "synthetic database").unwrap();
+        let store = Store::open(temp.path().join("test.sqlite")).unwrap();
+        store
+            .save_scan(&Scan {
+                id: "s".into(),
+                root: temp.path().to_str().unwrap().into(),
+                status: "complete".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .save_apps(
+                "s",
+                &[InstalledApp {
+                    id: "kiro".into(),
+                    name: "Kiro".into(),
+                    publisher: String::new(),
+                    install_location: app.to_str().unwrap().into(),
+                    source: "fixture".into(),
+                    last_used: None,
+                }],
+            )
+            .unwrap();
+        let mut file = filesystem::inspect(&database).unwrap();
+        file.complete = true;
+        let mut directory = filesystem::inspect(&user).unwrap();
+        directory.complete = true;
+        Store::insert_batch(&mut store.connection().unwrap(), "s", &[file, directory]).unwrap();
+        let database_id = store.by_path("s", database.to_str().unwrap()).unwrap().id;
+        let result = preview(&store, "s", &[database_id]).unwrap();
+        assert!(result.items[0].allowed);
+        assert_eq!(result.items[0].risk, "review");
+        assert!(result.items[0].reason.contains("应用数据"));
+        assert!(result.requires_extra_confirmation);
+        assert!(
+            execute(&store, &result, false, Arc::new(AtomicBool::new(false)))
+                .unwrap_err()
+                .to_string()
+                .contains("确认")
+        );
+        assert!(database.exists());
+        let directory_id = store.by_path("s", user.to_str().unwrap()).unwrap().id;
+        assert!(preview(&store, "s", &[directory_id]).unwrap().items[0].allowed);
+        let identity = filesystem::inspect(&user).unwrap().identity.unwrap();
+        assert!(prepare_recycle(
+            user.to_str().unwrap(),
+            &identity,
+            &SafetyPolicy::new(Settings::default()),
+            &AtomicBool::new(false)
+        )
+        .is_ok());
+        let mut settings = Settings::default();
+        settings
+            .protected_paths
+            .push(database.to_str().unwrap().into());
+        store.put("settings", &settings).unwrap();
+        assert!(!preview(&store, "s", &[database_id]).unwrap().items[0].allowed);
+        assert!(prepare_recycle(
+            user.to_str().unwrap(),
+            &identity,
+            &SafetyPolicy::new(settings),
+            &AtomicBool::new(false)
+        )
+        .is_err());
+    }
+
+    #[test]
+    #[ignore = "Explicit release check: recycles only a newly created synthetic database"]
+    fn confirmed_application_database_is_recycled_with_a_success_receipt() {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("SyntheticApp");
+        let user = app.join("User");
+        std::fs::create_dir_all(&user).unwrap();
+        let path = user.join(format!("diskvista-release-{}.sqlite", uuid::Uuid::new_v4()));
+        std::fs::write(&path, "DiskVista synthetic release test; no personal data").unwrap();
+        let store = Store::open(temp.path().join("index.sqlite")).unwrap();
+        store
+            .save_scan(&Scan {
+                id: "s".into(),
+                root: temp.path().to_str().unwrap().into(),
+                status: "complete".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .save_apps(
+                "s",
+                &[InstalledApp {
+                    id: "synthetic".into(),
+                    name: "SyntheticApp".into(),
+                    publisher: String::new(),
+                    install_location: app.to_str().unwrap().into(),
+                    source: "release fixture".into(),
+                    last_used: None,
+                }],
+            )
+            .unwrap();
+        let mut file = filesystem::inspect(&path).unwrap();
+        file.complete = true;
+        Store::insert_batch(&mut store.connection().unwrap(), "s", &[file]).unwrap();
+        let id = store.by_path("s", path.to_str().unwrap()).unwrap().id;
+        let preview = preview(&store, "s", &[id]).unwrap();
+        assert!(preview.items[0].allowed);
+        assert!(execute(&store, &preview, false, Arc::new(AtomicBool::new(false))).is_err());
+        assert!(path.exists());
+        let receipt = execute(&store, &preview, true, Arc::new(AtomicBool::new(false))).unwrap();
+        assert_eq!(receipt.len(), 1);
+        assert_eq!(receipt[0].status, "recycled", "{}", receipt[0].message);
+        assert!(!path.exists());
+        assert!(receipt[0].message.contains("Windows 回收站"));
     }
 }

@@ -322,7 +322,13 @@ impl RuleSet {
                 });
             }
         }
-        if let Some(reason) = policy.reason(file).or_else(|| apps.installed_reason(file)) {
+        // A cache rule must not imply that personal databases or credentials are disposable.
+        if crate::safety::sensitive_path(&file.path) {
+            a.risk = "review".into();
+            a.consequence =
+                "删除可能丢失应用数据、登录信息或个人内容；请确认不再需要并做好备份".into();
+        }
+        if let Some(reason) = policy.reason(file) {
             a.risk = "protected".into();
             a.protected_reason = Some(reason.clone());
             a.recommendation = reason;
@@ -419,7 +425,7 @@ mod tests {
             &policy,
             &[],
         );
-        assert_eq!(a.risk, "protected");
+        assert_eq!(a.risk, "review");
     }
     #[test]
     fn unknown_is_never_low_risk() {
@@ -453,7 +459,7 @@ mod tests {
             &SafetyPolicy::new(Settings::default()),
             &[app],
         );
-        assert_eq!(a.risk, "protected");
+        assert_eq!(a.risk, "review");
         assert_eq!(a.category, "application");
         assert!(!a.purpose.contains("尚未识别"));
     }
@@ -471,7 +477,7 @@ mod tests {
         );
         assert_eq!(a.category, "application_container");
         assert!(a.owner.is_none());
-        assert_eq!(a.risk, "protected");
+        assert_eq!(a.risk, "review");
         assert!(a.purpose.contains("多个独立应用"));
     }
     #[test]
@@ -521,7 +527,7 @@ mod tests {
         };
         assert_eq!(
             rules.classify_indexed(&sensitive, &policy, &index).risk,
-            "protected"
+            "review"
         );
     }
 

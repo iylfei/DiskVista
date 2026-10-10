@@ -194,7 +194,7 @@ export default function OverviewPage({
             <ShieldCheck size={20} />
             <p>
               <strong>重要内容会受到保护</strong>
-              <span>系统文件、驱动和已安装程序不能直接清理。</span>
+              <span>系统关键文件和驱动默认受保护。</span>
             </p>
           </div>
           <div>
