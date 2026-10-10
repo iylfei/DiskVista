@@ -51,6 +51,8 @@ import { useCleanupSelection } from "./lib/useCleanupSelection";
 import HistoryPage from "./pages/HistoryPage";
 import RulesPage from "./pages/RulesPage";
 import TitleBar from "./components/TitleBar";
+import FeatureTour from "./components/FeatureTour";
+import { rememberFeatureTour, shouldShowFeatureTour } from "./lib/featureTour";
 import { version as appVersion } from "../../package.json";
 import { sameSnapshot, startScanPolling } from "./lib/scanPolling";
 import { mergeFileDetail } from "./lib/fileDetail";
@@ -73,6 +75,17 @@ type Page = (typeof navigation)[number][0];
 export default function App() {
   const [language, setAppLanguage] = useState<Language>("zh-CN");
   const [boot, setBoot] = useState<Bootstrap | null>(null);
+  const [tourOpen, setTourOpen] = useState(false);
+  const tourChecked = useRef(false);
+  useEffect(() => {
+    if (!boot || tourChecked.current) return;
+    tourChecked.current = true;
+    if (shouldShowFeatureTour()) setTourOpen(true);
+  }, [boot]);
+  const finishTour = useCallback(() => {
+    rememberFeatureTour();
+    setTourOpen(false);
+  }, []);
   const [error, setError] = useState("");
   const [page, setPage] = useState<Page>("overview");
   const pageRef = useRef<Page>(page);
@@ -463,6 +476,7 @@ export default function App() {
           {navigation.map(([id, label, Icon]) => (
             <button
               key={id}
+              data-tour={id}
               title={label}
               aria-label={label}
               disabled={cleaning}
@@ -507,6 +521,7 @@ export default function App() {
               />
             )}
             <button
+              data-tour="scan-folder"
               onClick={browse}
               disabled={!!scanning || cleaning || !!scanDeletion}
             >
@@ -837,6 +852,7 @@ export default function App() {
                     hasKey={boot.hasKey}
                     onSave={save}
                     onError={fail}
+                    onShowTour={() => setTourOpen(true)}
                   />
                 )}
                 {page === "rules" && (
@@ -876,6 +892,7 @@ export default function App() {
           />
         )}
       </div>
+      {boot && tourOpen && <FeatureTour onFinish={finishTour} />}
     </div>
   );
 }

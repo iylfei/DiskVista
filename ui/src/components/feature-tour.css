@@ -1,0 +1,127 @@
+.feature-tour {
+  app-region: no-drag;
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #242a32;
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+.feature-tour::backdrop {
+  background: transparent;
+}
+.feature-tour-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.feature-tour-shade {
+  fill: rgb(17 27 42 / 68%);
+}
+.feature-tour-spotlight {
+  fill: none;
+  stroke: #b7d8ff;
+  stroke-width: 2;
+}
+.feature-tour-connector path {
+  fill: none;
+  stroke: #b7d8ff;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.feature-tour-connector circle {
+  fill: #b7d8ff;
+}
+[data-tour-current] {
+  opacity: 1 !important;
+}
+.feature-tour-card {
+  position: absolute;
+  width: 360px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 32px);
+  padding: 20px 22px;
+  border: 1px solid #e0e8f1;
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 16px 54px rgb(0 0 0 / 24%);
+  overflow: auto;
+}
+.feature-tour-header,
+.feature-tour-heading,
+.feature-tour-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.feature-tour-header {
+  margin-bottom: 19px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.feature-tour-header .text-button {
+  color: var(--muted);
+}
+.feature-tour-heading {
+  justify-content: flex-start;
+  margin-bottom: 12px;
+}
+.feature-tour-heading h2 {
+  font-size: 19px;
+}
+.feature-tour-number {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: #eaf2fb;
+  color: #36658d;
+  font-size: 17px;
+  font-weight: 650;
+}
+.feature-tour-card > p {
+  color: #596879;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+.feature-tour-steps {
+  display: flex;
+  gap: 8px;
+  margin: 22px 0 18px;
+}
+.feature-tour-steps button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  border-color: #e3e9f0;
+  color: #788594;
+  font-size: 12px;
+}
+.feature-tour-steps button.visited {
+  background: #f0f5fb;
+  color: #416f99;
+}
+.feature-tour-steps button[aria-current="step"] {
+  border-color: var(--blue);
+  background: var(--blue);
+  color: #fff;
+  font-weight: 600;
+}
+.feature-tour-actions {
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.feature-tour-actions button {
+  padding: 9px 13px;
+}

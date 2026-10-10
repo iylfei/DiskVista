@@ -20,11 +20,13 @@ export default function SettingsPage({
   hasKey,
   onSave,
   onError,
+  onShowTour,
 }: {
   settings: Settings;
   hasKey: boolean;
   onSave: (s: Settings) => void;
   onError: (e: unknown) => void;
+  onShowTour?: () => void;
 }) {
   const [draft, setDraft] = useState<Settings>(() => {
     const value = structuredClone(settings);
@@ -300,6 +302,17 @@ export default function SettingsPage({
           </p>
           {saveButton("general", "保存常规设置")}
         </section>
+        {onShowTour && (
+          <section className="panel">
+            <h2>功能介绍</h2>
+            <p className="muted">逐步了解扫描、空间分析和清理的主要入口。</p>
+            <div className="actions">
+              <button type="button" onClick={onShowTour}>
+                重新查看功能介绍
+              </button>
+            </div>
+          </section>
+        )}
       </div>
       <div
         className="settings-stack-panel"

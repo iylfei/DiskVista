@@ -1,4 +1,27 @@
 const exactEnglish: Record<string, string> = {
+  功能介绍: "Feature tour",
+  跳过引导: "Skip tour",
+  功能介绍进度: "Feature tour progress",
+  "查看第 {1} 步：{2}": "View step {1}: {2}",
+  上一步: "Previous",
+  下一步: "Next",
+  开始使用: "Get started",
+  重新查看功能介绍: "Show feature tour again",
+  "AI 分析": "AI analysis",
+  "逐步了解扫描、空间分析和清理的主要入口。":
+    "Explore the main tools for scanning, space analysis, and cleanup step by step.",
+  "从这里选择要扫描的文件夹。扫描后，你就能查看空间占用和清理建议，也可以在总览中选择磁盘或常用位置。":
+    "Choose a folder to scan here, then explore its space usage and cleanup suggestions. You can also select a drive or common location in Overview.",
+  "用方块大小直观看出哪些文件和文件夹最占空间。点击文件夹可逐层查看，找到需要整理的内容。":
+    "Larger blocks show the files and folders using the most space. Click a folder to explore it and find what needs organizing.",
+  "按应用查看空间占用，了解安装文件、缓存和数据分别占了多少空间，再决定如何整理。":
+    "View space usage by application and see how much is used by installation files, caches, and data before deciding what to organize.",
+  "集中查看缓存、临时文件和大文件等候选项。先看用途与风险，再把确认不需要的内容加入待清理清单。":
+    "Review candidates such as caches, temporary files, and large files. Check their purpose and risks, then add unwanted items to the cleanup basket.",
+  "把准备清理的内容放在这里统一核对。确认后，DiskVista 会先检查保护状态和文件占用，再将可回收的项目移入回收站。":
+    "Review everything you plan to clean up here. After confirmation, DiskVista checks protections and files in use before moving eligible items to the Recycle Bin.",
+  "遇到用途不明的大文件，可以让 AI 提供用途说明和清理建议。先在设置中配置并启用 AI，再扫描并分析；结果仅供参考，清理由你确认。":
+    "Use AI to explain unfamiliar large files and suggest cleanup options. Configure and enable AI in Settings, then scan and analyze. Results are advisory; you confirm cleanup.",
   设置已保存: "Settings saved",
   设置分类: "Settings categories",
   常规: "General",

@@ -52,6 +52,7 @@ export default function ScanAnalysisButton({
   return (
     <>
       <button
+        data-tour="ai-analysis"
         className={`ai-indicator${status.attention ? " needs-attention" : ""}`}
         title={status.description}
         aria-label={
